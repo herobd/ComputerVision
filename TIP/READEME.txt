@@ -1,0 +1,18 @@
+This was a class project for a computer vision class. I realized that I had hard coded a few parameters to work for the image included. Working on fixing that.
+I had virtually no graphics experience when making this, so it is done in OpenCV's viz3D package. Hence the funky controls.
+
+Usage: ./TIP <image>
+
+Click to select the upper left corner of the back wall of the image.
+Press enter.
+Click the lower right corner of the back wall.
+Press enter.
+Click to select the vanishing point (guidelines will be displayed to help you get the right one).
+Press enter.
+(Now it will take a minute to compute the world.)
+(You have to click the image for it to update for some reason)
+3D world View:
+	Drag the display to rotate the view.
+	Mousewheel to zoom
+	Ctrl+drag to rotate in orthoganal plane
+	Shift+drag to move camera
