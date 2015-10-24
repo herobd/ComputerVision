@@ -22,6 +22,12 @@ using namespace cv;
 bool hasPrefix(const std::string& a, const std::string& pref) {
     return a.substr(0,pref.size()) == b;
 }
+bool isTrainingImage(int index) {
+    return index%2==1;
+}
+bool isTestingImage(int index) {
+    return index%2==0;
+}
 
 int main(int argc, char** argv)
 {
@@ -126,67 +132,79 @@ int main(int argc, char** argv)
         else
             cout << "Error, could not load files for codebook." << endl;
     }
-    else if (hasPrefix(option,"train_svm"))
+    else if (hasPrefix(option,"train_svm"))//train_svm_eps=$D_C=$D_AllVs=$POSITIVECLASS $CODEBOOKLOC $MODELLOC)
     {
-        double eps = 0.1;
-        double C = 1.0;
+        double eps = 0.001;
+        double C = 2.0;
         smatch sm_option;
-        regex parse_option("train_svm_eps=(-?[0-9]*(\\.[0-9]+)?)_C=(-?[0-9]*(\\.[0-9]+)?)");
+        int positiveClass = -1;
+        regex parse_option("train_svm_eps=(-?[0-9]*(\\.[0-9]+)?)_C=(-?[0-9]*(\\.[0-9]+)?)_AllVs=([0-9]+)");
         if(regex_search(option,sm_option,parse_option))
         {
             eps = stof(sm_option[1]);
             C = stof(sm_option[2]);
+            positiveClass = stoi(sm_option[3]);
         }
+        string codebookLoc = argv[argc-2];
+        string modelLoc = argv[argc-1];
+        
         Codebook codebook;
         codebook.readIn(codebookLoc);
-        int positiveClass = atoi(argv[?]);
+        
         vector< vector<double>* > imageDescriptions;
         vector<double> imageLabels;
         
         
         DIR *dir;
         struct dirent *ent;
-        if ((dir = opendir (imageDir.c_str())) != NULL)
+        if ((dir = opendir (imageDir.c_str())) == NULL)
         {
-          cout << "reading images and obtaining descriptions" << endl;
+            cout << "ERROR: failed to open training directory" << endl;
+            return -1;
+        }
+         cout << "reading images and obtaining descriptions" << endl;
           
-          vector<string> fileNames;
-          while ((ent = readdir (dir)) != NULL) {
-              string fileName(ent->d_name);
-              smatch sm;
-              regex parse("([0-9][0-9][0-9])_([0-9][0-9][0-9][0-9]).jpg");
-              if (regex_search(fileName,sm,parse))
+        vector<string> fileNames;
+        while ((ent = readdir (dir)) != NULL) {
+          string fileName(ent->d_name);
+          smatch sm;
+          regex parse("([0-9][0-9][0-9])_([0-9][0-9][0-9][0-9]).jpg");
+          if (regex_search(fileName,sm,parse))
+          {
+              if (isTrainingImage(stoi(sm[2]))
               {
-                  if (isTrainingImage(stoi(sm[2]))
-                  {
-                    fileNames.push_back(fileName);
+                fileNames.push_back(fileName);
+                if (positiveClass!=-1)
                     imageLabels.push_back(stoi(sm[1])==positiveClass?1:-1);
-                  }
+                else
+                    imageLabels.push_back(stoi(sm[1]));
               }
           }
-          //private(fileName,img,desc,t)
-          int loopCrit = min((int)5000,(int)fileNames.size());
-    #pragma omp parallel for 
-          for (int nameIdx=0; nameIdx<loopCrit; nameIdx++)
-          {
+        }
+        //private(fileName,img,desc,t)
+        int loopCrit = (int)fileNames.size();
+        #pragma omp parallel for 
+        for (int nameIdx=0; nameIdx<loopCrit; nameIdx++)
+        {
               
               
             string fileName=fileNames[nameIdx];
-            
+
             Mat color_img = imread(directory+fileName, CV_LOAD_IMAGE_COLOR);
 
             vector<KeyPoint>* keyPoints = getKeyPoints(argv[2],color_img);
             vector< vector<double> >* descriptors = getDescriptors(argv[3],color_img,keyPoints);
             vector<double>* imageDescription = getImageDescription(argv[4],keyPoints,descriptors,&codebook);
-            
-    #pragma omp critical
+
+            #pragma omp critical
             {
                 imageDescriptions.push_back(imageDescription);
             }
 
             delete keyPoints
             delete descriptors;
-          }
+        }
+        
         
         
         
@@ -196,24 +214,7 @@ int main(int argc, char** argv)
         prob.x = new struct svm_node*[imageDescriptions.size()];
         for (int i=0; i<imageDescriptions.size(); i++)
         {
-            int nonzeroCount=0;
-            for (int j=0; j<imageDescriptions[j]->size(); j++)
-            {
-                if (imageDescriptions[j]->at(i)!=0)
-                    nonzeroCount++;
-            }
-            prob.x[i] = new struct svm_node[nonzeroCount+1];
-            int nonzeroIter=0;
-            for (int j=0; j<imageDescriptions[j].size(); j++)
-            {
-                if (imageDescriptions[j]->at(i)!=0)
-                {
-                    prob.x[i][nonzeroIter].index = j;
-                    prob.x[i][nonzeroIter].value = imageDescriptions[j]->at(i);
-                    nonzeroIter++;
-                }
-                prob.x[i][nonzeroIter].index = -1;//end
-            }
+            prob.x[i] = convertDescription(imageDescriptions[i]);
             delete imageDescriptions[j];
         }
         
@@ -225,11 +226,148 @@ int main(int argc, char** argv)
         para.cache_size = 100;
         para.eps = eps;
         para.C = C;
-        para.nr_weight
+        para.nr_weight=0;
+        
+        const char *err = svm_check_parameter(prob,para);
+        if (err!=NULL)
+        {
+            cout << "ERROR: " << string(err) << endl;
+            return -1;
+        }
+        struct svm_model *trained_model = svm_train(prob,para);
+        
+        int err2 = svm_save_model(modelLoc, trained_model);
+        
+        if (err2 == -1)
+        {
+            cout << "ERROR: failed to save model" << endl;
+            return -1;
+        }
+        
+        int correct = 0;
+        for (int i=0; i<imageDescriptions.size(); i++)
+        {
+            svn_node* x = para.x[i];
+            double class_prediction = svm_predict_values(trained_model, x);//, double* dec_values
+            if (class_prediciton == imageLabels[i])
+                correct++;
+        }
+        cout << "Accuracy on training data: " << correct/(double)imageDescriptions.size() << endl;
+        
+        svm_free_model_content(trained_model);
+        svm_destroy_param(para);
+    }
+    else if (hasPrefix(option,"test_svm"))
+    {
+        smatch sm_option;
+        int positiveClass = -1;
+        regex parse_option("test_svm_AllVs=([0-9]+)");
+        if(regex_search(option,sm_option,parse_option))
+        {
+            positiveClass = stoi(sm_option[1]);
+        }
+        string codebookLoc = argv[argc-2];
+        string modelLoc = argv[argc-1];
+        
+        struct svm_model* trained_model = svm_load_model(modelLoc.c_str());
+        
+        
+        Codebook codebook;
+        codebook.readIn(codebookLoc);
+        int positiveClass = atoi(argv[argc-3]);
+        vector< vector<double>* > imageDescriptions;
+        vector<double> imageLabels;
+        
+        
+        DIR *dir;
+        struct dirent *ent;
+        if ((dir = opendir (imageDir.c_str())) == NULL)
+        {
+            cout << "ERROR: failed to open testing directory" << endl;
+            return -1;
+        }
+         cout << "reading images and obtaining descriptions" << endl;
+          
+        vector<string> fileNames;
+        while ((ent = readdir (dir)) != NULL) {
+          string fileName(ent->d_name);
+          smatch sm;
+          regex parse("([0-9][0-9][0-9])_([0-9][0-9][0-9][0-9]).jpg");
+          if (regex_search(fileName,sm,parse))
+          {
+              if (isTestingImage(stoi(sm[2]))
+              {
+                fileNames.push_back(fileName);
+                if (positiveClass!=-1)
+                    imageLabels.push_back(stoi(sm[1])==positiveClass?1:-1);
+                else
+                    imageLabels.push_back(stoi(sm[1]));
+              }
+          }
+        }
+        int loopCrit = (int)fileNames.size();
+        #pragma omp parallel for 
+        for (int nameIdx=0; nameIdx<loopCrit; nameIdx++)
+        {
+              
+              
+            string fileName=fileNames[nameIdx];
+
+            Mat color_img = imread(directory+fileName, CV_LOAD_IMAGE_COLOR);
+
+            vector<KeyPoint>* keyPoints = getKeyPoints(argv[2],color_img);
+            vector< vector<double> >* descriptors = getDescriptors(argv[3],color_img,keyPoints);
+            vector<double>* imageDescription = getImageDescription(argv[4],keyPoints,descriptors,&codebook);
+
+            #pragma omp critical
+            {
+                imageDescriptions.push_back(imageDescription);
+            }
+
+            delete keyPoints
+            delete descriptors;
+        }
+        
+        int correct = 0;
+        for (int i=0; i<imageDescriptions.size(); i++)
+        {
+            svn_node* x = convertDescription(imageDescriptions[i]);
+            double class_prediction = svm_predict_values(trained_model, x);//, double* dec_values
+            if (class_prediciton == imageLabels[i])
+                correct++;
+            delete imageDescriptions[i];
+        }
+        cout << "Accuracy: " << correct/(double)imageDescriptions.size() << endl;
+        
+        svm_free_model_content(trained_model);
+        
     }
     
-    
     return 0;
+}
+
+
+struct svm_node* convertDescription(const vector<double>* description, )
+{
+    int nonzeroCount=0;
+    for (int j=0; j<description->size(); j++)
+    {
+        if (description->at(i)!=0)
+            nonzeroCount++;
+    }
+    struct svm_node* ret = new struct svm_node[nonzeroCount+1];
+    int nonzeroIter=0;
+    for (int j=0; j<description.size(); j++)
+    {
+        if (description->at(i)!=0)
+        {
+            ret[nonzeroIter].index = j;
+            ret[nonzeroIter].value = description->at(i);
+            nonzeroIter++;
+        }
+        ret[nonzeroIter].index = -1;//end
+    }
+    return ret;
 }
 
 vector<KeyPoint>* getKeyPoints(string option, const Mat& img)
