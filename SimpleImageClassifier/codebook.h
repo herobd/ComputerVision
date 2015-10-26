@@ -29,7 +29,7 @@ public:
     void readIn(string filePath);
     void readInCSV(string filePath);
     
-    void trainFromExamples(int codebook_size,vector< vector<float> >& accum);
+    void trainFromExamples(int codebook_size,vector< vector<double> >& accum);
     
     void unittest();
     void print();
