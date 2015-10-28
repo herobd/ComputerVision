@@ -23,8 +23,8 @@
 #include "codebook.h"
 
 #define SAVE_LOC string("./save/")
-#define DEFAULT_IMG_DIR string("/home/brian/Douments/CS601R/leedsbutterfly/images/")
-#define DEFAULT_CODEBOOK_SIZE 4096
+#define DEFAULT_IMG_DIR string("/home/brian/Documents/CS601R/leedsbutterfly/images/")
+#define DEFAULT_CODEBOOK_SIZE 1024
 
 using namespace std;
 using namespace cv;
@@ -56,9 +56,11 @@ struct svm_node* convertDescription(const vector<double>* description)
             ret[nonzeroIter].index = j;
             ret[nonzeroIter].value = description->at(j);
             nonzeroIter++;
+            //cout << "["<<j<<"]="<<description->at(j)<<", ";
         }
         ret[nonzeroIter].index = -1;//end
     }
+    //cout << endl;
     return ret;
 }
 
@@ -69,9 +71,10 @@ vector<KeyPoint>* getKeyPoints(string option, const Mat& color_img)
         Mat img;
         cvtColor(color_img,img,CV_BGR2GRAY);
         
-        int nfeaturePoints=10;
+        int nfeaturePoints=50;
         int nOctivesPerLayer=3;
-        SIFT detector(nfeaturePoints,nOctivesPerLayer);
+        double contrastThresh=0.02;
+        SIFT detector(nfeaturePoints,nOctivesPerLayer,contrastThresh);
         vector<KeyPoint>* ret = new vector<KeyPoint>();
         
         detector(img,noArray(),*ret,noArray(),false);
@@ -92,9 +95,13 @@ vector< vector<double> >* getDescriptors(string option, Mat color_img, vector<Ke
         Mat img;
         cvtColor(color_img,img,CV_BGR2GRAY);
         
-        int nfeaturePoints=10;
+        //imshow("test",img);
+        
+        
+        int nfeaturePoints=50;
         int nOctivesPerLayer=3;
-        SIFT detector(nfeaturePoints,nOctivesPerLayer);
+        double contrastThresh=0.02;
+        SIFT detector(nfeaturePoints,nOctivesPerLayer,contrastThresh);
         Mat desc;
         detector(img,noArray(),*keyPoints,desc,true);
         vector< vector<double> >* ret = new vector< vector<double> >(desc.rows);
@@ -104,8 +111,13 @@ vector< vector<double> >* getDescriptors(string option, Mat color_img, vector<Ke
             for (unsigned int j=0; j<desc.cols; j++)
             {
                 ret->at(i).at(j) = desc.at<float>(i,j);
+                //cout << desc.at<float>(i,j) << ", ";
             }
+            //cout << endl;
         }
+        
+        //waitKey();
+        
         return ret;
     }
     else if (hasPrefix(option,"customSIFT"))
@@ -159,9 +171,9 @@ vector<double>* getImageDescription(string option, const vector<KeyPoint>* keyPo
 }
 
 
-void getImageDescriptions(string imageDir, bool trainImages, int positiveClass, Codebook* codebook, string keyPoint_option, string descriptor_option, string pool_option, vector< vector<double>* >* imageDescriptions, vector<double>* imageLabels)
+void getImageDescriptions(string imageDir, bool trainImages, int positiveClass, const Codebook* codebook, string keyPoint_option, string descriptor_option, string pool_option, vector< vector<double>* >* imageDescriptions, vector<double>* imageLabels)
 {
-    string saveFileName=SAVE_LOC+"imageDesc_"+(positiveClass!=-1?"one_":"")+keyPoint_option+"_"+descriptor_option+"_"+pool_option+".save";
+    string saveFileName=SAVE_LOC+"imageDesc_"+(trainImages?string("train"):string("test"))+"_"+keyPoint_option+"_"+descriptor_option+"_"+pool_option+".save";
     ifstream load(saveFileName);
     if (!load)
     {
@@ -185,16 +197,14 @@ void getImageDescriptions(string imageDir, bool trainImages, int positiveClass, 
                   (!trainImages && isTestingImage(stoi(sm[2]))) )
               {
                 fileNames.push_back(fileName);
-                if (positiveClass!=-1)
-                    imageLabels->push_back(stoi(sm[1])==positiveClass?1:-1);
-                else
-                    imageLabels->push_back(stoi(sm[1]));
+                
+                imageLabels->push_back(stoi(sm[1]));
               }
           }
         }
         
-        int loopCrit = (int)fileNames.size();
-        #pragma omp parallel for 
+        unsigned int loopCrit = fileNames.size();
+        #pragma omp parallel for num_threads(3)
         for (unsigned int nameIdx=0; nameIdx<loopCrit; nameIdx++)
         {
               
@@ -216,7 +226,7 @@ void getImageDescriptions(string imageDir, bool trainImages, int positiveClass, 
             delete descriptors;
         }
         
-        //TODO save
+        //save
         ofstream save(saveFileName);
         for (unsigned int i=0; i<imageDescriptions->size(); i++)
         {
@@ -232,31 +242,149 @@ void getImageDescriptions(string imageDir, bool trainImages, int positiveClass, 
     else
     {
         string line;
+        smatch sm;
+        regex parse_option("Label:([0-9]+) Desc:(((-?[0-9]*(\\.[0-9]+)?),)+)");
+        regex parse_values("(-?[0-9]*(\\.[0-9]+)?),");
         while (getline(load,line))
         {
-            smatch sm;
-            regex parse_option("Label:([0-9]+) Desc:(-?[0-9]*(\\.[0-9]+)?,)+");
+            
             if(regex_search(line,sm,parse_option))
             {
+                //for (unsigned int i=0; i<sm.size(); i+=1)
+                //{
+                //    cout <<sm[i]<<endl;
+                //}
+                
                 int label = stoi(sm[1]);
-                if (positiveClass!=-1)
-                    imageLabels->push_back(label==positiveClass?1:-1);
-                else
-                    imageLabels->push_back(label);
+                //cout << label << endl;
+                imageLabels->push_back(label);
+                
                 vector<double>* imageDescription = new vector<double>();
-                for (unsigned int i=2; i<sm.size(); i+=2)
+                string values = string(sm[2]);
+                //cout << "values" << endl;
+                while(regex_search(values,sm,parse_values))
                 {
-                    imageDescription->push_back(stof(sm[i]));
+                    //cout <<sm[1]<<endl;
+                    imageDescription->push_back(stof(sm[1]));
+                    values = sm.suffix();
                 }
+                imageDescriptions->push_back(imageDescription);
             }
         }
         load.close();
     }
+    
+    if (positiveClass>=0)
+    {
+        for (int i=0; i<imageLabels->size(); i++)
+        {
+            imageLabels->at(i) = imageLabels->at(i)==positiveClass?1:-1;
+        }
+    }
+}
+
+
+void train(string imageDir, int positiveClass, const Codebook* codebook, string keypoint_option, string descriptor_option, string pool_option, double eps, double C, string modelLoc)
+{
+    vector< vector<double>* > imageDescriptions;
+    vector<double> imageLabels;
+    getImageDescriptions(imageDir, true, positiveClass, codebook, keypoint_option, descriptor_option, pool_option, &imageDescriptions, &imageLabels);
+    
+    
+    struct svm_problem* prob = new struct svm_problem();
+    prob->l = imageDescriptions.size();
+    prob->y = imageLabels.data();
+    prob->x = new struct svm_node*[imageDescriptions.size()];
+    for (unsigned int i=0; i<imageDescriptions.size(); i++)
+    {
+        prob->x[i] = convertDescription(imageDescriptions[i]);
+        delete imageDescriptions[i];
+    }
+    
+    struct svm_parameter* para = new struct svm_parameter();
+    if (positiveClass == -1)
+    {
+        para->svm_type = C_SVC;
+        para->nr_weight=0;
+    }
+    else
+    {
+        para->svm_type = ONE_CLASS;
+        para->nu = 0.8;//?
+        para->nr_weight=1;
+        para->weight_label=new int[1];
+        para->weight_label[0]=1;
+        para->weight=new double[1];
+        para->weight[0]=1.5;
+    }
+    para->kernel_type = RBF;
+    para->gamma = 1.0/codebook->size();
+    
+    para->cache_size = 100;
+    para->eps = eps;
+    para->C = C;
+    
+    
+    const char *err = svm_check_parameter(prob,para);
+    if (err!=NULL)
+    {
+        cout << "ERROR: " << string(err) << endl;
+        exit(-1);
+    }
+    struct svm_model *trained_model = svm_train(prob,para);
+    
+    if (modelLoc == "default") modelLoc = SAVE_LOC+"model_"+to_string(positiveClass)+"_"+keypoint_option+"_"+descriptor_option+"_"+pool_option+".svm";
+    
+    int err2 = svm_save_model(modelLoc.c_str(), trained_model);
+    
+    if (err2 == -1)
+    {
+        cout << "ERROR: failed to save model" << endl;
+        exit(-1);
+    }
+    cout << "saved as " << modelLoc << endl;
+    
+    int numLabels = svm_get_nr_class(trained_model);
+    double* dec_values = new double[numLabels*(numLabels-1)/2];
+    
+    int correct = 0;
+    int found =0;
+    int ret=0;
+    int numP=0;
+    for (unsigned int i=0; i<imageDescriptions.size(); i++)
+    {
+        struct svm_node* x = prob->x[i];
+        double class_prediction = svm_predict_values(trained_model, x, dec_values);
+        if (class_prediction == imageLabels[i])
+            correct++;
+            
+        if (positiveClass != -1)
+        {    
+            if ((imageLabels[i]==1) && class_prediction>0)
+                    found++;
+                
+            if (imageLabels[i]==1)
+                numP++;
+                
+            if (class_prediction>0)
+                ret++;
+        }
+    }
+    cout << "Accuracy on training data: " << correct/(double)imageDescriptions.size() << endl;
+    if (positiveClass != -1)
+    {
+        cout << "recall: " << found/(double)numP << endl;
+        cout << "precision: " << found/(double)ret << endl;
+    }
+    svm_free_model_content(trained_model);
+    svm_destroy_param(para);
+    delete[] dec_values;
 }
 ///////////////////////////////////////////
 
 int main(int argc, char** argv)
 {
+    vector<int> labelsGlobal={1,2,3,4,5,6,7,8,9,10};
     string option = argv[1];
     if (hasPrefix(option,"compare_SIFT"))
     {
@@ -335,9 +463,10 @@ int main(int argc, char** argv)
                   continue;
               fileNames.push_back(fileName);
           }
-          //private(fileName,img,desc,t)
-          int loopCrit = min((int)5000,(int)fileNames.size());
-    #pragma omp parallel for 
+          
+          int loopCrit = min((int)(300*codebook_size/50),(int)fileNames.size());
+          //int loopCrit = min((int)(300),(int)fileNames.size());
+    #pragma omp parallel for num_threads(3)
           for (unsigned int nameIdx=0; nameIdx<loopCrit; nameIdx++)
           {
               
@@ -353,7 +482,6 @@ int main(int argc, char** argv)
               {
                   for (const vector<double>& description : *descriptors)
                   {
-                      //              assert(get<0>(t).size() > 0);
                       if (description.size() > 0)
                           accum.push_back(description);
                   }
@@ -377,13 +505,15 @@ int main(int argc, char** argv)
         double C = 2.0;
         smatch sm_option;
         int positiveClass = -1;
-        regex parse_option("train_svm_eps=(-?[0-9]*(\\.[0-9]+)?)_C=(-?[0-9]*(\\.[0-9]+)?)_AllVs=([0-9]+)");
+        regex parse_option("train_svm_eps=(-?[0-9]*(\\.[0-9]+)?)_C=(-?[0-9]*(\\.[0-9]+)?)_AllVs=(-?[0-9]+)");
         if(regex_search(option,sm_option,parse_option))
         {
             eps = stof(sm_option[1]);
-            C = stof(sm_option[2]);
-            positiveClass = stoi(sm_option[3]);
+            C = stof(sm_option[3]);
+            positiveClass = stoi(sm_option[5]);
+            cout << "eps="<<eps<<" C="<<C<<" positiveClass="<<positiveClass<<endl;
         }
+        
         
         string keypoint_option = argv[2];
         string descriptor_option = argv[3];
@@ -396,78 +526,29 @@ int main(int argc, char** argv)
         string codebookLoc = argv[argc-2];
         if (codebookLoc == "default") codebookLoc = SAVE_LOC+"codebook_"+to_string(DEFAULT_CODEBOOK_SIZE)+"_"+keypoint_option+"_"+descriptor_option+".cb";
         string modelLoc = argv[argc-1];
-        if (modelLoc == "default") modelLoc = SAVE_LOC+"model_"+to_string(positiveClass)+"_"+keypoint_option+"_"+descriptor_option+"_"+pool_option+".svm";
+        
         
         Codebook codebook;
         codebook.readIn(codebookLoc);
         
-        vector< vector<double>* > imageDescriptions;
-        vector<double> imageLabels;
-        
-        
-        getImageDescriptions(imageDir, true, positiveClass, &codebook, keypoint_option, descriptor_option, pool_option, &imageDescriptions, &imageLabels);
-        
-        
-        
-        
-        struct svm_problem* prob = new struct svm_problem();
-        prob->l = imageDescriptions.size();
-        prob->y = imageLabels.data();
-        prob->x = new struct svm_node*[imageDescriptions.size()];
-        for (unsigned int i=0; i<imageDescriptions.size(); i++)
+        if (positiveClass != -2)
+            train(imageDir, positiveClass, &codebook, keypoint_option, descriptor_option, pool_option, eps, C, modelLoc);
+        else
         {
-            prob->x[i] = convertDescription(imageDescriptions[i]);
-            delete imageDescriptions[i];
+            
+            
+            
+            for (int label : labelsGlobal)
+            {
+                train(imageDir, label, &codebook, keypoint_option, descriptor_option, pool_option, eps, C, (modelLoc=="default")?modelLoc:modelLoc+to_string(label));
+            }
         }
-        
-        struct svm_parameter* para = new struct svm_parameter();
-        para->svm_type = C_SVC;
-        para->kernel_type = RBF;
-        para->gamma = 1.0/codebook.size();
-        
-        para->cache_size = 100;
-        para->eps = eps;
-        para->C = C;
-        para->nr_weight=0;
-        
-        const char *err = svm_check_parameter(prob,para);
-        if (err!=NULL)
-        {
-            cout << "ERROR: " << string(err) << endl;
-            return -1;
-        }
-        struct svm_model *trained_model = svm_train(prob,para);
-        
-        int err2 = svm_save_model(modelLoc.c_str(), trained_model);
-        
-        if (err2 == -1)
-        {
-            cout << "ERROR: failed to save model" << endl;
-            return -1;
-        }
-        
-        int numLabels = svm_get_nr_class(trained_model);
-        double* dec_values = new double[numLabels*(numLabels-1)/2];
-        
-        int correct = 0;
-        for (unsigned int i=0; i<imageDescriptions.size(); i++)
-        {
-            struct svm_node* x = prob->x[i];
-            double class_prediction = svm_predict_values(trained_model, x, dec_values);
-            if (class_prediction == imageLabels[i])
-                correct++;
-        }
-        cout << "Accuracy on training data: " << correct/(double)imageDescriptions.size() << endl;
-        
-        svm_free_model_content(trained_model);
-        svm_destroy_param(para);
-        delete[] dec_values;
     }
     else if (hasPrefix(option,"test_svm"))
     {
         smatch sm_option;
         int positiveClass = -1;
-        regex parse_option("test_svm_AllVs=([0-9]+)");
+        regex parse_option("test_svm_AllVs=(-?[0-9]+)");
         if(regex_search(option,sm_option,parse_option))
         {
             positiveClass = stoi(sm_option[1]);
@@ -478,14 +559,15 @@ int main(int argc, char** argv)
         string pool_option = argv[4];
         
         string imageDir = argv[argc-3];
-        if (imageDir == "default") imageDir = DEFAULT_IMG_DIR;
-        if (imageDir[imageDir.size()-1]!='/') imageDir += '/';
+        if (imageDir == "default")
+            imageDir = DEFAULT_IMG_DIR;
+        if (imageDir[imageDir.size()-1]!='/')
+            imageDir += '/';
         string codebookLoc = argv[argc-2];
-        if (codebookLoc == "default") codebookLoc = SAVE_LOC+"codebook_"+to_string(DEFAULT_CODEBOOK_SIZE)+"_"+keypoint_option+"_"+descriptor_option+".cb";
+        if (codebookLoc == "default")
+            codebookLoc = SAVE_LOC+"codebook_"+to_string(DEFAULT_CODEBOOK_SIZE)+"_"+keypoint_option+"_"+descriptor_option+".cb";
         string modelLoc = argv[argc-1];
-        if (modelLoc == "default") modelLoc = SAVE_LOC+"model_"+to_string(positiveClass)+"_"+keypoint_option+"_"+descriptor_option+"_"+pool_option+".svm";
         
-        struct svm_model* trained_model = svm_load_model(modelLoc.c_str());
         
         
         Codebook codebook;
@@ -494,32 +576,168 @@ int main(int argc, char** argv)
         vector<double> imageLabels;
         
         
-        getImageDescriptions(imageDir, true, positiveClass, &codebook, keypoint_option, descriptor_option, pool_option, &imageDescriptions, &imageLabels);
-        
-        int numLabels = svm_get_nr_class(trained_model);
-        int* labels = new int[numLabels];
-        svm_get_labels(trained_model, labels);
-        double* dec_values = new double[numLabels*(numLabels-1)/2];
+        getImageDescriptions(imageDir, false, positiveClass, &codebook, keypoint_option, descriptor_option, pool_option, &imageDescriptions, &imageLabels);
         
         
-        //if (positiveClass==-1)
-        //    for (unsigned int classIdx=0; classIdx<numLabels; classIdx++)
-        //    {
+        
+        if (positiveClass != -2)
+        {
+            if (modelLoc == "default")
+                modelLoc = SAVE_LOC+"model_"+to_string(positiveClass)+"_"+keypoint_option+"_"+descriptor_option+"_"+pool_option+".svm";
+        
+            struct svm_model* trained_model = svm_load_model(modelLoc.c_str());
+            
+            int numLabels = svm_get_nr_class(trained_model);
+            int* labels = new int[numLabels];
+            svm_get_labels(trained_model, labels);
+            double* dec_values = new double[numLabels*(numLabels-1)/2];
+            
+            int correct = 0;
+            int found =0;
+            int ret=0;
+            int numP=0;
+            for (unsigned int i=0; i<imageDescriptions.size(); i++)
+            {
+                struct svm_node* x = convertDescription(imageDescriptions[i]);
+                double class_prediction = svm_predict_values(trained_model, x, dec_values);
+                if (class_prediction == imageLabels[i])
+                    correct++;
+                
+                if (positiveClass != -1)
+                {    
+                    if ((imageLabels[i]==1) && class_prediction>0)
+                            found++;
+                        
+                    if (imageLabels[i]==1)
+                        numP++;
+                        
+                    if (class_prediction>0)
+                        ret++;
+                } 
+                delete imageDescriptions[i];
+                delete x;
+            }
+            cout << "Accuracy: " << correct/(double)imageDescriptions.size() << endl;
+            if (positiveClass != -1)
+            {
+                cout << "recall: " << found/(double)numP << endl;
+                cout << "precision: " << found/(double)ret << endl;
+            }
+            svm_free_model_content(trained_model);
+            delete[] labels;
+        }
+        else
+        {
+            map<int,struct svm_model*> trained_models;
+            for (int label : labelsGlobal)
+            {
+                string thisModelLoc;
+                if (modelLoc == "default")
+                    thisModelLoc = SAVE_LOC+"model_"+to_string(label)+"_"+keypoint_option+"_"+descriptor_option+"_"+pool_option+".svm";
+                else
+                    thisModelLoc = modelLoc + to_string(label);
+                trained_models[label] = svm_load_model(thisModelLoc.c_str());
+                assert(trained_models[label] != NULL);
+                 cout << "loaded " << thisModelLoc << endl;
+            }
+            
+            ////////
+            vector<tuple<double,double> > bestLabels;
+            for (unsigned int i=0; i<imageDescriptions.size(); i++)
+            {
+                bestLabels.push_back(make_tuple(-1,0.0));
+            }
+            for (int label : labelsGlobal)
+            {
+                if (modelLoc == "default")
+                    modelLoc = SAVE_LOC+"model_"+to_string(label)+"_"+keypoint_option+"_"+descriptor_option+"_"+pool_option+".svm";
+            
+                
+                int numLabels = svm_get_nr_class(trained_models[label]);
+                int* labels = new int[numLabels];
+                svm_get_labels(trained_models[label], labels);
+                double* dec_values = new double[numLabels*(numLabels-1)/2];
+                
                 int correct = 0;
+                int found =0;
+                int ret=0;
+                int numP=0;
                 for (unsigned int i=0; i<imageDescriptions.size(); i++)
                 {
                     struct svm_node* x = convertDescription(imageDescriptions[i]);
-                    double class_prediction = svm_predict_values(trained_model, x, dec_values);
-                    if (class_prediction == imageLabels[i])
+                    double class_prediction = svm_predict_values(trained_models[label], x, dec_values);
+                    if (class_prediction == (imageLabels[i]==label?1:-1))
                         correct++;
-                    delete imageDescriptions[i];
+                    
+                    if ((imageLabels[i]==label) && class_prediction>0)
+                        found++;
+                        
+                    if (imageLabels[i]==label)
+                        numP++;
+                        
+                    if (class_prediction>0)
+                        ret++;
+                    
+                    if (class_prediction>0 && dec_values[0]>get<1>(bestLabels[i]))
+                        bestLabels[i] = make_tuple(label,dec_values[0]);
+                    //delete imageDescriptions[i];
                 }
-                cout << "Accuracy: " << correct/(double)imageDescriptions.size() << endl;
-        //    }
-        //else
-        //    cout << "Warning, one class not implemented" << endl;
-        svm_free_model_content(trained_model);
-        delete[] labels;
+                cout << "Single Accuracy: " << correct/(double)imageDescriptions.size() << endl;
+                cout << "recall: " << found/(double)numP << endl;
+                cout << "precision: " << found/(double)ret << endl;
+                //svm_free_model_content(trained_models[label]);
+                //delete[] labels;
+                
+            }
+            int new_count=0;
+            for (unsigned int i=0; i<imageDescriptions.size(); i++)
+            {
+                if (get<0>(bestLabels[i]) == imageLabels[i])
+                    new_count++;
+            }
+            cout << "Full Accuracy: " << new_count/(double)imageDescriptions.size() << endl;
+            //return 1;
+            ///////
+            int numLabels = svm_get_nr_class(trained_models[1]);
+            cout << "num labels " << numLabels << endl;
+            int* labels = new int[numLabels];
+            svm_get_labels(trained_models[1], labels);
+            double* dec_values = new double[numLabels*(numLabels-1)/2];
+            int correct = 0;
+            for (unsigned int i=0; i<imageDescriptions.size(); i++)
+            {
+                
+                double class_prediction=0;
+                double conf=0;
+                for (int label : labelsGlobal)
+                {
+                    struct svm_node* x = convertDescription(imageDescriptions[i]);
+                    double is_this_class = svm_predict_values(trained_models[label], x, dec_values);
+                    if (is_this_class > 0 && dec_values[0]>conf)
+                    {
+                        class_prediction = label;
+                        conf = dec_values[0];
+                    }
+                    //cout <<i << ", for label " << label << " : " << is_this_class << endl;
+                    //for (unsigned int d=0; d<numLabels*(numLabels-1)/2; d++)
+                    //    cout << dec_values[d] << ", ";
+                    //cout << endl;
+                    delete x;
+                }
+                //cout << "actual : " << imageLabels[i] << endl;
+                if (class_prediction == imageLabels[i])
+                    correct++;
+                delete imageDescriptions[i];
+                
+            }
+            cout << "Accuracy: " << correct/(double)imageDescriptions.size() << endl;
+            for (int label : labelsGlobal)
+            {
+                svm_free_model_content(trained_models[label]);
+            }
+            delete[] labels;
+        }
+        
     }
     
     return 0;

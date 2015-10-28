@@ -1,5 +1,5 @@
 CXX = g++-4.9
-CXX_FLAGS = -std=c++11 -g -c -Wall -I libsvm-3.20/
+CXX_FLAGS = -std=c++11 -g -c  -I libsvm-3.20/ #-Wall
 
 SOURCES += main.cpp
 

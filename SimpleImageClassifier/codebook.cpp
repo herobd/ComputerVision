@@ -411,11 +411,12 @@ void Codebook::trainFromExamples(int codebook_size,vector< vector<double> >& acc
     //      for (int r=0; r< accum.size(); r++)
     //          for (int c=0; c<accum[0].size(); c++)
     //              data.at<float>(r,c) = accum[r][c];
-    cv::Mat data(codebook_size*300,accum[0].size(),CV_32F);
+    int examples_size = std::min( (codebook_size*300), (int) accum.size());
+    cv::Mat data(examples_size,accum[0].size(),CV_32F);
     
     cout << "selecting random set" << endl;
     cout << "really. accum is " << accum.size() << endl;
-    for (int count=0; count< codebook_size*300; count++)
+    for (int count=0; count< examples_size; count++)
     {
         int r=rand()%accum.size();
         int orig=r;
@@ -425,10 +426,12 @@ void Codebook::trainFromExamples(int codebook_size,vector< vector<double> >& acc
             if (r==orig)
             {
                 cout << "ERROR: not enough descriptors" << endl;
+                assert(false);
                 exit(-1);
+                //break;
             }
         }
-        
+        //if (r==orig) break;
         
         for (int c=0; c<accum[0].size(); c++)
         {
@@ -440,7 +443,7 @@ void Codebook::trainFromExamples(int codebook_size,vector< vector<double> >& acc
     cout << "computing kmeans" << endl;
     
     cv::Mat temp;
-    cv::kmeans(data,codebook_size,temp,crit,10,cv::KMEANS_RANDOM_CENTERS,centriods);
+    cv::kmeans(data,codebook_size,temp,crit,1,cv::KMEANS_PP_CENTERS,centriods);
     
     
     cout << "compiling codebook" << endl;
@@ -450,7 +453,7 @@ void Codebook::trainFromExamples(int codebook_size,vector< vector<double> >& acc
         vector<double> toAdd;
         for (int c=0; c<centriods.cols; c++)
         {
-            assert(centriods.at<float>(r,c) >= 0);
+            assert(centriods.at<float>(r,c) > -1);
             toAdd.push_back(centriods.at<float>(r,c));
         }
         codebook.push_back(toAdd);
