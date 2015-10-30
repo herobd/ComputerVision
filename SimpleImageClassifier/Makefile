@@ -3,7 +3,7 @@ CXX_FLAGS = -std=c++11 -g -c  -I libsvm-3.20/ #-Wall
 
 SOURCES += main.cpp
 
-LIBS += -L/urs/local/include/opencv2 -lopencv_features2d -lopencv_core -lopencv_highgui -lopencv_nonfree -lopencv_imgproc -fopenmp
+LIBS += -L/urs/local/include/opencv2 -lopencv_features2d -lopencv_core -lopencv_highgui -lopencv_nonfree -lopencv_imgproc -lopencv_ml -fopenmp
 PROGRAM_NAME = SimpleClassifier
 
 MAIN_OBJ_FILES = customsift.o main.o libsvm-3.20/svm.o codebook.o

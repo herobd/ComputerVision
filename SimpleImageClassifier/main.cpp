@@ -16,6 +16,7 @@
 
 #include "opencv2/features2d/features2d.hpp"
 #include "opencv2/nonfree/features2d.hpp"
+#include "opencv2/ml/ml.hpp"
 
 #include "svm.h"
 
@@ -58,8 +59,9 @@ struct svm_node* convertDescription(const vector<double>* description)
             nonzeroIter++;
             //cout << "["<<j<<"]="<<description->at(j)<<", ";
         }
-        ret[nonzeroIter].index = -1;//end
+        
     }
+    ret[nonzeroIter].index = -1;//end
     //cout << endl;
     return ret;
 }
@@ -71,13 +73,18 @@ vector<KeyPoint>* getKeyPoints(string option, const Mat& color_img)
         Mat img;
         cvtColor(color_img,img,CV_BGR2GRAY);
         
-        int nfeaturePoints=50;
+        int nfeaturePoints=500;
         int nOctivesPerLayer=3;
-        double contrastThresh=0.02;
+        double contrastThresh=0.1;
         SIFT detector(nfeaturePoints,nOctivesPerLayer,contrastThresh);
         vector<KeyPoint>* ret = new vector<KeyPoint>();
         
         detector(img,noArray(),*ret,noArray(),false);
+        
+        //Mat out;
+        //drawKeypoints( img, *ret, out, Scalar::all(-1), DrawMatchesFlags::DEFAULT );
+        //imshow("o",out);
+        //waitKey();
         return ret;
     }
     else if (hasPrefix(option,"dense"))
@@ -98,9 +105,9 @@ vector< vector<double> >* getDescriptors(string option, Mat color_img, vector<Ke
         //imshow("test",img);
         
         
-        int nfeaturePoints=50;
+        int nfeaturePoints=500;
         int nOctivesPerLayer=3;
-        double contrastThresh=0.02;
+        double contrastThresh=0.1;
         SIFT detector(nfeaturePoints,nOctivesPerLayer,contrastThresh);
         Mat desc;
         detector(img,noArray(),*keyPoints,desc,true);
@@ -170,6 +177,32 @@ vector<double>* getImageDescription(string option, const vector<KeyPoint>* keyPo
     return NULL;
 }
 
+void zscore(vector< vector<double>* >* imageDescriptions)
+{
+    vector<double> mean(imageDescriptions->front()->size());
+    for (vector<double>* image : *imageDescriptions)
+    {
+        for (int i=0; i<mean.size(); i++)
+            mean[i] += image->at(i);
+    }
+    for (int i=0; i<mean.size(); i++)
+        mean[i] /= imageDescriptions->size();
+    
+    vector<double> stdDev(imageDescriptions->front()->size());
+    for (vector<double>* image : *imageDescriptions)
+    {
+        for (int i=0; i<mean.size(); i++)
+            stdDev[i] += pow(image->at(i)-mean[i],2);
+    }
+    for (int i=0; i<stdDev.size(); i++)
+        stdDev[i] = sqrt(stdDev[i]);
+    
+    for (vector<double>* image : *imageDescriptions)
+    {
+        for (int i=0; i<image->size(); i++)
+            image->at(i) = (image->at(i)-mean[i])/stdDev[i];
+    }
+}
 
 void getImageDescriptions(string imageDir, bool trainImages, int positiveClass, const Codebook* codebook, string keyPoint_option, string descriptor_option, string pool_option, vector< vector<double>* >* imageDescriptions, vector<double>* imageLabels)
 {
@@ -226,6 +259,8 @@ void getImageDescriptions(string imageDir, bool trainImages, int positiveClass, 
             delete descriptors;
         }
         
+        zscore(imageDescriptions);
+        
         //save
         ofstream save(saveFileName);
         for (unsigned int i=0; i<imageDescriptions->size(); i++)
@@ -239,7 +274,7 @@ void getImageDescriptions(string imageDir, bool trainImages, int positiveClass, 
         }
         save.close();
     }
-    else
+    else //read in
     {
         string line;
         smatch sm;
@@ -306,24 +341,35 @@ void train(string imageDir, int positiveClass, const Codebook* codebook, string 
     {
         para->svm_type = C_SVC;
         para->nr_weight=0;
+        para->weight_label=NULL;
+        para->weight=NULL;
     }
     else
     {
-        para->svm_type = ONE_CLASS;
-        para->nu = 0.8;//?
+        //para->svm_type = ONE_CLASS;
+        //para->nu = 0.5;
+        para->svm_type = C_SVC;
         para->nr_weight=1;
         para->weight_label=new int[1];
         para->weight_label[0]=1;
         para->weight=new double[1];
-        para->weight[0]=1.5;
+        para->weight[0]=9.0;
     }
-    para->kernel_type = RBF;
+    para->kernel_type = LINEAR;
     para->gamma = 1.0/codebook->size();
     
     para->cache_size = 100;
     para->eps = eps;
     para->C = C;
+    para->shrinking = 1;
+    para->probability = 0;
     
+    ///probably not needed, but jic
+    para->degree = 3;
+    para->coef0 = 0;
+    para->nu = 0.5;
+    para->p = 0.1;
+    /////
     
     const char *err = svm_check_parameter(prob,para);
     if (err!=NULL)
@@ -379,6 +425,80 @@ void train(string imageDir, int positiveClass, const Codebook* codebook, string 
     svm_free_model_content(trained_model);
     svm_destroy_param(para);
     delete[] dec_values;
+}
+
+
+void trainSVM_CV(string imageDir, int positiveClass, const Codebook* codebook, string keypoint_option, string descriptor_option, string pool_option, double eps, double C, string modelLoc)
+{
+    vector< vector<double>* > imageDescriptions;
+    vector<double> imageLabels;
+    getImageDescriptions(imageDir, true, positiveClass, codebook, keypoint_option, descriptor_option, pool_option, &imageDescriptions, &imageLabels);
+    
+
+    
+    Mat labelsMat(imageLabels.size(), 1, CV_32FC1);
+    for (int j=0; j<imageLabels.size(); j++)
+    {
+        labelsMat.at<float>(j,0) = imageLabels[j];
+    }
+
+    
+    Mat trainingDataMat(imageDescriptions.size(), imageDescriptions[0]->size(), CV_32FC1);
+    for (int j=0; j<imageDescriptions.size(); j++)
+        for (int i=0; i<imageDescriptions[j]->size(); i++)
+        {
+            trainingDataMat.at<float>(j,i)=imageDescriptions[j]->at(i);
+        }
+    
+    CvSVMParams params;
+    params.svm_type    = CvSVM::C_SVC;
+    params.kernel_type = CvSVM::LINEAR;
+    params.term_crit   = cvTermCriteria(CV_TERMCRIT_ITER, 100, 1e-6);
+    
+    CvSVM SVM;
+    SVM.train_auto(trainingDataMat, labelsMat, Mat(), Mat(), params);
+    
+    if (modelLoc == "default") modelLoc = SAVE_LOC+"model_"+to_string(positiveClass)+"_"+keypoint_option+"_"+descriptor_option+"_"+pool_option+".xml";
+    
+    SVM.save(modelLoc.c_str());
+    cout << "saved as " << modelLoc << endl;
+    
+    
+    int correct = 0;
+    int found =0;
+    int ret=0;
+    int numP=0;
+    for (unsigned int j=0; j<imageDescriptions.size(); j++)
+    {
+        
+        Mat instance(1, imageDescriptions[j]->size(), CV_32FC1);
+        for (int i=0; i<imageDescriptions[j]->size(); i++)
+        {
+            instance.at<float>(0,i)=imageDescriptions[j]->at(i);
+        }
+        
+        float class_prediction = SVM.predict(instance,false);
+        if (class_prediction == imageLabels[j])
+            correct++;
+            
+        if (positiveClass != -1)
+        {    
+            if ((imageLabels[j]==1) && class_prediction>0)
+                    found++;
+                
+            if (imageLabels[j]==1)
+                numP++;
+                
+            if (class_prediction>0)
+                ret++;
+        }
+    }
+    cout << "Accuracy on training data: " << correct/(double)imageDescriptions.size() << endl;
+    if (positiveClass != -1)
+    {
+        cout << "recall: " << found/(double)numP << endl;
+        cout << "precision: " << found/(double)ret << endl;
+    }
 }
 ///////////////////////////////////////////
 
@@ -499,13 +619,13 @@ int main(int argc, char** argv)
         else
             cout << "Error, could not load files for codebook." << endl;
     }
-    else if (hasPrefix(option,"train_svm"))//train_svm_eps=$D_C=$D_AllVs=$POSITIVECLASS $CODEBOOKLOC $MODELLOC)
+    else if (hasPrefix(option,"train_libsvm"))//train_svm_eps=$D_C=$D_AllVs=$POSITIVECLASS $CODEBOOKLOC $MODELLOC)
     {
         double eps = 0.001;
         double C = 2.0;
         smatch sm_option;
         int positiveClass = -1;
-        regex parse_option("train_svm_eps=(-?[0-9]*(\\.[0-9]+)?)_C=(-?[0-9]*(\\.[0-9]+)?)_AllVs=(-?[0-9]+)");
+        regex parse_option("train_libsvm_eps=(-?[0-9]*(\\.[0-9]+)?)_C=(-?[0-9]*(\\.[0-9]+)?)_AllVs=(-?[0-9]+)");
         if(regex_search(option,sm_option,parse_option))
         {
             eps = stof(sm_option[1]);
@@ -529,7 +649,8 @@ int main(int argc, char** argv)
         
         
         Codebook codebook;
-        codebook.readIn(codebookLoc);
+        if (codebookLoc != "none")
+            codebook.readIn(codebookLoc);
         
         if (positiveClass != -2)
             train(imageDir, positiveClass, &codebook, keypoint_option, descriptor_option, pool_option, eps, C, modelLoc);
@@ -544,11 +665,55 @@ int main(int argc, char** argv)
             }
         }
     }
-    else if (hasPrefix(option,"test_svm"))
+    else if (hasPrefix(option,"train_cvsvm"))//train_svm_eps=$D_C=$D_AllVs=$POSITIVECLASS $CODEBOOKLOC $MODELLOC)
+    {
+        double eps = 0.001;
+        double C = 2.0;
+        smatch sm_option;
+        int positiveClass = -1;
+        regex parse_option("train_cvsvm_AllVs=(-?[0-9]+)");
+        if(regex_search(option,sm_option,parse_option))
+        {
+            positiveClass = stoi(sm_option[1]);
+            cout << "positiveClass="<<positiveClass<<endl;
+        }
+        
+        
+        string keypoint_option = argv[2];
+        string descriptor_option = argv[3];
+        string pool_option = argv[4];
+        
+        string imageDir = argv[argc-3];
+        if (imageDir == "default") imageDir = DEFAULT_IMG_DIR;
+        if (imageDir[imageDir.size()-1]!='/') imageDir += '/';
+        
+        string codebookLoc = argv[argc-2];
+        if (codebookLoc == "default") codebookLoc = SAVE_LOC+"codebook_"+to_string(DEFAULT_CODEBOOK_SIZE)+"_"+keypoint_option+"_"+descriptor_option+".cb";
+        string modelLoc = argv[argc-1];
+        
+        
+        Codebook codebook;
+        if (codebookLoc != "none")
+            codebook.readIn(codebookLoc);
+        
+        if (positiveClass != -2)
+            trainSVM_CV(imageDir, positiveClass, &codebook, keypoint_option, descriptor_option, pool_option, eps, C, modelLoc);
+        else
+        {
+            
+            
+            
+            for (int label : labelsGlobal)
+            {
+                trainSVM_CV(imageDir, label, &codebook, keypoint_option, descriptor_option, pool_option, eps, C, (modelLoc=="default")?modelLoc:modelLoc+to_string(label));
+            }
+        }
+    }
+    else if (hasPrefix(option,"test_libsvm"))
     {
         smatch sm_option;
         int positiveClass = -1;
-        regex parse_option("test_svm_AllVs=(-?[0-9]+)");
+        regex parse_option("test_libsvm_AllVs=(-?[0-9]+)");
         if(regex_search(option,sm_option,parse_option))
         {
             positiveClass = stoi(sm_option[1]);
@@ -739,6 +904,135 @@ int main(int argc, char** argv)
         }
         
     }
+    else if (hasPrefix(option,"test_cvsvm"))
+    {
+        smatch sm_option;
+        int positiveClass = -1;
+        regex parse_option("test_cvsvm_AllVs=(-?[0-9]+)");
+        if(regex_search(option,sm_option,parse_option))
+        {
+            positiveClass = stoi(sm_option[1]);
+        }
+        
+        string keypoint_option = argv[2];
+        string descriptor_option = argv[3];
+        string pool_option = argv[4];
+        
+        string imageDir = argv[argc-3];
+        if (imageDir == "default")
+            imageDir = DEFAULT_IMG_DIR;
+        if (imageDir[imageDir.size()-1]!='/')
+            imageDir += '/';
+        string codebookLoc = argv[argc-2];
+        if (codebookLoc == "default")
+            codebookLoc = SAVE_LOC+"codebook_"+to_string(DEFAULT_CODEBOOK_SIZE)+"_"+keypoint_option+"_"+descriptor_option+".cb";
+        string modelLoc = argv[argc-1];
+        
+        
+        
+        Codebook codebook;
+        codebook.readIn(codebookLoc);
+        vector< vector<double>* > imageDescriptions;
+        vector<double> imageLabels;
+        
+        
+        getImageDescriptions(imageDir, false, positiveClass, &codebook, keypoint_option, descriptor_option, pool_option, &imageDescriptions, &imageLabels);
+        
+        
+        
+        if (positiveClass != -2)
+        {
+            if (modelLoc == "default")
+                modelLoc = SAVE_LOC+"model_"+to_string(positiveClass)+"_"+keypoint_option+"_"+descriptor_option+"_"+pool_option+".xml";
+            
+            CvSVM SVM;
+            SVM.load(modelLoc.c_str());
+            
+            
+            int correct = 0;
+            int found =0;
+            int ret=0;
+            int numP=0;
+            for (unsigned int j=0; j<imageDescriptions.size(); j++)
+            {
+                Mat instance(1, imageDescriptions[j]->size(), CV_32FC1);
+                for (int i=0; i<imageDescriptions[j]->size(); i++)
+                {
+                    instance.at<float>(0,i)=imageDescriptions[j]->at(i);
+                }
+                float class_prediction = SVM.predict(instance,false);
+                if (class_prediction == imageLabels[j])
+                    correct++;
+                    
+                if (positiveClass != -1)
+                {    
+                    if ((imageLabels[j]==1) && class_prediction>0)
+                            found++;
+                        
+                    if (imageLabels[j]==1)
+                        numP++;
+                        
+                    if (class_prediction>0)
+                        ret++;
+                }
+            }
+            cout << "Accuracy: " << correct/(double)imageDescriptions.size() << endl;
+            if (positiveClass != -1)
+            {
+                cout << "recall: " << found/(double)numP << endl;
+                cout << "precision: " << found/(double)ret << endl;
+            }
+        }
+        else
+        {
+            map<int,CvSVM> trained_models;
+            for (int label : labelsGlobal)
+            {
+                string thisModelLoc;
+                if (modelLoc == "default")
+                    thisModelLoc = SAVE_LOC+"model_"+to_string(label)+"_"+keypoint_option+"_"+descriptor_option+"_"+pool_option+".xml";
+                else
+                    thisModelLoc = modelLoc + to_string(label);
+                trained_models[label].load(thisModelLoc.c_str());
+                //if (loaded)
+                //    cout << "loaded " << thisModelLoc << endl;
+                //else
+                //    cout << "failed to load " << thisModelLoc << endl;
+            }
+            
+            
+            int correct = 0;
+            for (unsigned int j=0; j<imageDescriptions.size(); j++)
+            {
+                
+                double class_prediction=0;
+                double conf=0;
+                Mat instance(1, imageDescriptions[j]->size(), CV_32FC1);
+                for (int i=0; i<imageDescriptions[j]->size(); i++)
+                {
+                    instance.at<float>(0,i)=imageDescriptions[j]->at(i);
+                }
+                for (int label : labelsGlobal)
+                {
+                    float is_this_class = trained_models[label].predict(instance,true);
+                    if (is_this_class > 0 && is_this_class>conf)
+                    {
+                        class_prediction = label;
+                        conf = is_this_class;
+                    }
+                }
+                //cout << "actual : " << imageLabels[i] << endl;
+                if (class_prediction == imageLabels[j])
+                    correct++;
+                delete imageDescriptions[j];
+                
+            }
+            cout << "Accuracy: " << correct/(double)imageDescriptions.size() << endl;
+        }
+        
+    }
+    else
+        cout << "ERROR no option: " << option << endl;
     
     return 0;
 }
