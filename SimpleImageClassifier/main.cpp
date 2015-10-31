@@ -266,6 +266,7 @@ void getImageDescriptions(string imageDir, bool trainImages, int positiveClass, 
         for (unsigned int i=0; i<imageDescriptions->size(); i++)
         {
             save << "Label:" << imageLabels->at(i) << " Desc:";
+	    assert(imageDescriptions->at(i)->size() == codebook->size());
             for (unsigned int j=0; j<imageDescriptions->at(i)->size(); j++)
             {
                 save << imageDescriptions->at(i)->at(j) << ",";
@@ -303,6 +304,7 @@ void getImageDescriptions(string imageDir, bool trainImages, int positiveClass, 
                     imageDescription->push_back(stof(sm[1]));
                     values = sm.suffix();
                 }
+		assert(codebook==NULL || imageDescription->size() == codebook->size());
                 imageDescriptions->push_back(imageDescription);
             }
         }
@@ -454,7 +456,13 @@ void trainSVM_CV(string imageDir, int positiveClass, const Codebook* codebook, s
     params.svm_type    = CvSVM::C_SVC;
     params.kernel_type = CvSVM::LINEAR;
     params.term_crit   = cvTermCriteria(CV_TERMCRIT_ITER, 100, 1e-6);
-    
+    Mat weighting = (Mat_<float>(2,1) << 9,1);
+    CvMat www = weighting;
+    if (positiveClass != -1)
+    {
+       params.class_weights = &www;
+    }
+
     CvSVM SVM;
     SVM.train_auto(trainingDataMat, labelsMat, Mat(), Mat(), params);
     
@@ -955,6 +963,7 @@ int main(int argc, char** argv)
             int numP=0;
             for (unsigned int j=0; j<imageDescriptions.size(); j++)
             {
+                assert(imageDescriptions[j]->size() == codebook.size());
                 Mat instance(1, imageDescriptions[j]->size(), CV_32FC1);
                 for (int i=0; i<imageDescriptions[j]->size(); i++)
                 {

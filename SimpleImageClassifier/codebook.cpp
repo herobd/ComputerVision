@@ -443,7 +443,7 @@ void Codebook::trainFromExamples(int codebook_size,vector< vector<double> >& acc
     cout << "computing kmeans" << endl;
     
     cv::Mat temp;
-    cv::kmeans(data,codebook_size,temp,crit,1,cv::KMEANS_PP_CENTERS,centriods);
+    cv::kmeans(data,codebook_size,temp,crit,10,cv::KMEANS_RANDOM_CENTERS,centriods);
     
     
     cout << "compiling codebook" << endl;
