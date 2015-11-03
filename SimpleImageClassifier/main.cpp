@@ -599,6 +599,8 @@ void trainSVM_CV(string imageDir, int positiveClass, const Codebook* codebook, s
     }
 }
 ///////////////////////////////////////////
+#include "tester.cpp"
+////////////////
 
 int main(int argc, char** argv)
 {
@@ -1079,6 +1081,10 @@ int main(int argc, char** argv)
             cout << "Accuracy: " << correct/(double)imageDescriptions.size() << endl;
         }
         
+    }
+    else if (hasPrefix(option,"test_cvsvm"))
+    {
+        test();
     }
     else
         cout << "ERROR no option: " << option << endl;
