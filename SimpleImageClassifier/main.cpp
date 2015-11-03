@@ -191,8 +191,10 @@ vector<double>* getImageDescription(string option, const vector<KeyPoint>* keyPo
     return NULL;
 }
 
-void zscore(vector< vector<double>* >* imageDescriptions, vector<double>& mean, vector<double>& stdDev)
+void zscore(vector< vector<double>* >* imageDescriptions, string saveFileName)
 {
+    vector<double> mean;
+    vector<double> stdDev;
     assert(imageDescriptions->size() > 0);
     mean.resize(imageDescriptions->front()->size(),0);
     for (vector<double>* image : *imageDescriptions)
@@ -218,10 +220,59 @@ void zscore(vector< vector<double>* >* imageDescriptions, vector<double>& mean, 
             if (stdDev[i] != 0)
                 image->at(i) = (image->at(i)-mean[i])/stdDev[i];
     }
+    
+    ofstream saveZ(saveFileName);
+    saveZ << "Mean:";
+    for (int i=0; i<mean.size(); i++)
+        saveZ << mean[i] << ",";
+    saveZ << "\nStdDev:";
+    for (int i=0; i<stdDev.size(); i++)
+        saveZ << stdDev[i] << ",";
+    saveZ << endl;
+    saveZ.close();
 }
 
-void zscoreUse(vector< vector<double>* >* imageDescriptions, const vector<double>& mean, const vector<double>& stdDev)
+void zscoreUse(vector< vector<double>* >* imageDescriptions, string loadFileName)
 {
+    ifstream loadZ(loadFileName);
+    regex parse_line("\\w*:(((-?[0-9]*(\\.[0-9]+e?-?[0-9]*)?),)+)");
+    regex parse_values("(-?[0-9]*(\\.[0-9]+e?-?[0-9]*)?),");
+    string line;
+    smatch sm;
+    getline(loadZ,line);
+    if(regex_search(line,sm,parse_line))
+    {
+        string values = string(sm[1]);
+        while(regex_search(values,sm,parse_values))
+        {
+            mean.push_back(my_stof(sm[1]));
+            values = sm.suffix();
+        }
+    }
+    else
+    {
+        cout << "ERROR, no Z mean"<<endl;
+        assert(false);
+        exit(-1);
+    }
+    
+    getline(loadZ,line);
+    if(regex_search(line,sm,parse_line))
+    {
+        string values = string(sm[1]);
+        while(regex_search(values,sm,parse_values))
+        {
+            stdDev.push_back(my_stof(sm[1]));
+            values = sm.suffix();
+        }
+    }
+    else
+    {
+        cout << "ERROR, no Z stdDev"<<endl;
+        assert(false);
+        exit(-1);
+    }
+    
     for (vector<double>* image : *imageDescriptions)
     {
         for (int i=0; i<image->size(); i++)
@@ -285,65 +336,13 @@ void getImageDescriptions(string imageDir, bool trainImages, int positiveClass, 
             delete keyPoints;
             delete descriptors;
         }
-        vector<double> mean;
-        vector<double> stdDev;
+        ;
         if (trainImages)
         {
-            zscore(imageDescriptions,mean,stdDev);
-            //save
-            ofstream saveZ(z_saveFileName);
-            saveZ << "Mean:";
-            for (int i=0; i<mean.size(); i++)
-                saveZ << mean[i] << ",";
-            saveZ << "\nStdDev:";
-            for (int i=0; i<stdDev.size(); i++)
-                saveZ << stdDev[i] << ",";
-            saveZ << endl;
-            saveZ.close();
-        }
+            zscore(imageDescriptions,z_saveFileName);
         else
         {
-            //load
-            ifstream loadZ(z_saveFileName);
-            regex parse_line("\\w*:(((-?[0-9]*(\\.[0-9]+e?-?[0-9]*)?),)+)");
-            regex parse_values("(-?[0-9]*(\\.[0-9]+e?-?[0-9]*)?),");
-            string line;
-            smatch sm;
-            getline(loadZ,line);
-            if(regex_search(line,sm,parse_line))
-            {
-                string values = string(sm[1]);
-                while(regex_search(values,sm,parse_values))
-                {
-                    mean.push_back(my_stof(sm[1]));
-                    values = sm.suffix();
-                }
-            }
-            else
-            {
-                cout << "ERROR, no Z mean"<<endl;
-                assert(false);
-                exit(-1);
-            }
-            
-            getline(loadZ,line);
-            if(regex_search(line,sm,parse_line))
-            {
-                string values = string(sm[1]);
-                while(regex_search(values,sm,parse_values))
-                {
-                    stdDev.push_back(my_stof(sm[1]));
-                    values = sm.suffix();
-                }
-            }
-            else
-            {
-                cout << "ERROR, no Z stdDev"<<endl;
-                assert(false);
-                exit(-1);
-            }
-            
-            zscoreUse(imageDescriptions,mean,stdDev);
+            zscoreUse(imageDescriptions,z_saveFileName);
         }
         
         //save
@@ -909,61 +908,6 @@ int main(int argc, char** argv)
             }
             
             ////////
-            vector<tuple<double,double> > bestLabels;
-            for (unsigned int i=0; i<imageDescriptions.size(); i++)
-            {
-                bestLabels.push_back(make_tuple(-1,0.0));
-            }
-            for (int label : labelsGlobal)
-            {
-                if (modelLoc == "default")
-                    modelLoc = SAVE_LOC+"model_"+to_string(label)+"_"+keypoint_option+"_"+descriptor_option+"_"+pool_option+".svm";
-            
-                
-                int numLabels = svm_get_nr_class(trained_models[label]);
-                int* labels = new int[numLabels];
-                svm_get_labels(trained_models[label], labels);
-                double* dec_values = new double[numLabels*(numLabels-1)/2];
-                
-                int correct = 0;
-                int found =0;
-                int ret=0;
-                int numP=0;
-                for (unsigned int i=0; i<imageDescriptions.size(); i++)
-                {
-                    struct svm_node* x = convertDescription(imageDescriptions[i]);
-                    double class_prediction = svm_predict_values(trained_models[label], x, dec_values);
-                    if (class_prediction == (imageLabels[i]==label?1:-1))
-                        correct++;
-                    
-                    if ((imageLabels[i]==label) && class_prediction>0)
-                        found++;
-                        
-                    if (imageLabels[i]==label)
-                        numP++;
-                        
-                    if (class_prediction>0)
-                        ret++;
-                    
-                    if (class_prediction>0 && dec_values[0]>get<1>(bestLabels[i]))
-                        bestLabels[i] = make_tuple(label,dec_values[0]);
-                    //delete imageDescriptions[i];
-                }
-                cout << "Single Accuracy: " << correct/(double)imageDescriptions.size() << endl;
-                cout << "recall: " << found/(double)numP << endl;
-                cout << "precision: " << found/(double)ret << endl;
-                //svm_free_model_content(trained_models[label]);
-                //delete[] labels;
-                
-            }
-            int new_count=0;
-            for (unsigned int i=0; i<imageDescriptions.size(); i++)
-            {
-                if (get<0>(bestLabels[i]) == imageLabels[i])
-                    new_count++;
-            }
-            cout << "Full Accuracy: " << new_count/(double)imageDescriptions.size() << endl;
-            //return 1;
             ///////
             int numLabels = svm_get_nr_class(trained_models[1]);
             cout << "num labels " << numLabels << endl;
