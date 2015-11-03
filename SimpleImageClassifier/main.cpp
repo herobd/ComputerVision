@@ -23,6 +23,8 @@
 #include "customsift.h"
 #include "codebook.h"
 
+#define NORMALIZE_DESC 0
+
 #define SAVE_LOC string("./save/")
 #define DEFAULT_IMG_DIR string("/home/brian/Documents/CS601R/leedsbutterfly/images/")
 #define DEFAULT_CODEBOOK_SIZE 1024
@@ -38,6 +40,13 @@ bool isTrainingImage(int index) {
 }
 bool isTestingImage(int index) {
     return index%2==0;
+}
+double my_stof(string s)
+{
+   istringstream os(s);
+   double d;
+   os >> d;
+   return d;
 }
 
 struct svm_node* convertDescription(const vector<double>* description)
@@ -66,6 +75,9 @@ struct svm_node* convertDescription(const vector<double>* description)
     return ret;
 }
 
+#define SIFT_NUMPTS 1000
+#define SIFT_THRESH 0.07
+
 vector<KeyPoint>* getKeyPoints(string option, const Mat& color_img)
 {
     if (hasPrefix(option,"SIFT"))
@@ -73,9 +85,9 @@ vector<KeyPoint>* getKeyPoints(string option, const Mat& color_img)
         Mat img;
         cvtColor(color_img,img,CV_BGR2GRAY);
         
-        int nfeaturePoints=500;
+        int nfeaturePoints=SIFT_NUMPTS;
         int nOctivesPerLayer=3;
-        double contrastThresh=0.1;
+        double contrastThresh=SIFT_THRESH;
         SIFT detector(nfeaturePoints,nOctivesPerLayer,contrastThresh);
         vector<KeyPoint>* ret = new vector<KeyPoint>();
         
@@ -105,9 +117,9 @@ vector< vector<double> >* getDescriptors(string option, Mat color_img, vector<Ke
         //imshow("test",img);
         
         
-        int nfeaturePoints=500;
+        int nfeaturePoints=SIFT_NUMPTS;
         int nOctivesPerLayer=3;
-        double contrastThresh=0.1;
+        double contrastThresh=SIFT_THRESH;
         SIFT detector(nfeaturePoints,nOctivesPerLayer,contrastThresh);
         Mat desc;
         detector(img,noArray(),*keyPoints,desc,true);
@@ -164,22 +176,25 @@ vector<double>* getImageDescription(string option, const vector<KeyPoint>* keyPo
         }
         
         //Normalize the description
-        double sum;
+#if NORMALIZE_DESC
+	double sum;
         for (double v : *ret)
             sum += v*v;
         double norm = sqrt(sum);
-        for (double& v : *ret)
-            v /= norm;
-            
+        if (norm != 0)
+            for (double& v : *ret)
+                v /= norm;
+#endif    
         return ret;
     }
     
     return NULL;
 }
 
-void zscore(vector< vector<double>* >* imageDescriptions)
+void zscore(vector< vector<double>* >* imageDescriptions, vector<double>& mean, vector<double>& stdDev)
 {
-    vector<double> mean(imageDescriptions->front()->size());
+    assert(imageDescriptions->size() > 0);
+    mean.resize(imageDescriptions->front()->size(),0);
     for (vector<double>* image : *imageDescriptions)
     {
         for (int i=0; i<mean.size(); i++)
@@ -188,7 +203,7 @@ void zscore(vector< vector<double>* >* imageDescriptions)
     for (int i=0; i<mean.size(); i++)
         mean[i] /= imageDescriptions->size();
     
-    vector<double> stdDev(imageDescriptions->front()->size());
+    stdDev.resize(imageDescriptions->front()->size(),0);
     for (vector<double>* image : *imageDescriptions)
     {
         for (int i=0; i<mean.size(); i++)
@@ -200,13 +215,25 @@ void zscore(vector< vector<double>* >* imageDescriptions)
     for (vector<double>* image : *imageDescriptions)
     {
         for (int i=0; i<image->size(); i++)
-            image->at(i) = (image->at(i)-mean[i])/stdDev[i];
+            if (stdDev[i] != 0)
+                image->at(i) = (image->at(i)-mean[i])/stdDev[i];
+    }
+}
+
+void zscoreUse(vector< vector<double>* >* imageDescriptions, const vector<double>& mean, const vector<double>& stdDev)
+{
+    for (vector<double>* image : *imageDescriptions)
+    {
+        for (int i=0; i<image->size(); i++)
+            if (stdDev[i] != 0)
+                image->at(i) = (image->at(i)-mean.at(i))/stdDev.at(i);
     }
 }
 
 void getImageDescriptions(string imageDir, bool trainImages, int positiveClass, const Codebook* codebook, string keyPoint_option, string descriptor_option, string pool_option, vector< vector<double>* >* imageDescriptions, vector<double>* imageLabels)
 {
     string saveFileName=SAVE_LOC+"imageDesc_"+(trainImages?string("train"):string("test"))+"_"+keyPoint_option+"_"+descriptor_option+"_"+pool_option+".save";
+    string z_saveFileName=SAVE_LOC+"zscore_"+keyPoint_option+"_"+descriptor_option+"_"+pool_option+".save";
     ifstream load(saveFileName);
     if (!load)
     {
@@ -258,8 +285,66 @@ void getImageDescriptions(string imageDir, bool trainImages, int positiveClass, 
             delete keyPoints;
             delete descriptors;
         }
-        
-        zscore(imageDescriptions);
+        vector<double> mean;
+        vector<double> stdDev;
+        if (trainImages)
+        {
+            zscore(imageDescriptions,mean,stdDev);
+            //save
+            ofstream saveZ(z_saveFileName);
+            saveZ << "Mean:";
+            for (int i=0; i<mean.size(); i++)
+                saveZ << mean[i] << ",";
+            saveZ << "\nStdDev:";
+            for (int i=0; i<stdDev.size(); i++)
+                saveZ << stdDev[i] << ",";
+            saveZ << endl;
+            saveZ.close();
+        }
+        else
+        {
+            //load
+            ifstream loadZ(z_saveFileName);
+            regex parse_line("\\w*:(((-?[0-9]*(\\.[0-9]+e?-?[0-9]*)?),)+)");
+            regex parse_values("(-?[0-9]*(\\.[0-9]+e?-?[0-9]*)?),");
+            string line;
+            smatch sm;
+            getline(loadZ,line);
+            if(regex_search(line,sm,parse_line))
+            {
+                string values = string(sm[1]);
+                while(regex_search(values,sm,parse_values))
+                {
+                    mean.push_back(my_stof(sm[1]));
+                    values = sm.suffix();
+                }
+            }
+            else
+            {
+                cout << "ERROR, no Z mean"<<endl;
+                assert(false);
+                exit(-1);
+            }
+            
+            getline(loadZ,line);
+            if(regex_search(line,sm,parse_line))
+            {
+                string values = string(sm[1]);
+                while(regex_search(values,sm,parse_values))
+                {
+                    stdDev.push_back(my_stof(sm[1]));
+                    values = sm.suffix();
+                }
+            }
+            else
+            {
+                cout << "ERROR, no Z stdDev"<<endl;
+                assert(false);
+                exit(-1);
+            }
+            
+            zscoreUse(imageDescriptions,mean,stdDev);
+        }
         
         //save
         ofstream save(saveFileName);
@@ -269,6 +354,7 @@ void getImageDescriptions(string imageDir, bool trainImages, int positiveClass, 
 	    assert(imageDescriptions->at(i)->size() == codebook->size());
             for (unsigned int j=0; j<imageDescriptions->at(i)->size(); j++)
             {
+                assert(imageDescriptions->at(i)->at(j) == imageDescriptions->at(i)->at(j));
                 save << imageDescriptions->at(i)->at(j) << ",";
             }
             save << endl;
@@ -279,8 +365,8 @@ void getImageDescriptions(string imageDir, bool trainImages, int positiveClass, 
     {
         string line;
         smatch sm;
-        regex parse_option("Label:([0-9]+) Desc:(((-?[0-9]*(\\.[0-9]+)?),)+)");
-        regex parse_values("(-?[0-9]*(\\.[0-9]+)?),");
+        regex parse_option("Label:([0-9]+) Desc:(((-?[0-9]*(\\.[0-9]+e?-?[0-9]*)?),)+)");
+        regex parse_values("(-?[0-9]*(\\.[0-9]+e?-?[0-9]*)?),");
         while (getline(load,line))
         {
             
@@ -301,7 +387,7 @@ void getImageDescriptions(string imageDir, bool trainImages, int positiveClass, 
                 while(regex_search(values,sm,parse_values))
                 {
                     //cout <<sm[1]<<endl;
-                    imageDescription->push_back(stof(sm[1]));
+                    imageDescription->push_back(my_stof(sm[1]));
                     values = sm.suffix();
                 }
 		assert(codebook==NULL || imageDescription->size() == codebook->size());
@@ -309,6 +395,7 @@ void getImageDescriptions(string imageDir, bool trainImages, int positiveClass, 
             }
         }
         load.close();
+        assert(imageDescriptions->size() > 0 );
     }
     
     if (positiveClass>=0)
@@ -356,9 +443,13 @@ void train(string imageDir, int positiveClass, const Codebook* codebook, string 
         para->weight_label[0]=1;
         para->weight=new double[1];
         para->weight[0]=9.0;
+        para->weight[1]=1.0;
     }
     para->kernel_type = LINEAR;
-    para->gamma = 1.0/codebook->size();
+    if (codebook != NULL)
+        para->gamma = 1.0/codebook->size();
+    else
+        para->gamma = 1.0/imageDescriptions[0]->size();
     
     para->cache_size = 100;
     para->eps = eps;
@@ -456,7 +547,7 @@ void trainSVM_CV(string imageDir, int positiveClass, const Codebook* codebook, s
     params.svm_type    = CvSVM::C_SVC;
     params.kernel_type = CvSVM::LINEAR;
     params.term_crit   = cvTermCriteria(CV_TERMCRIT_ITER, 100, 1e-6);
-    Mat weighting = (Mat_<float>(2,1) << 9,1);
+    Mat weighting = (Mat_<float>(2,1) << 9.0,1.0);
     CvMat www = weighting;
     if (positiveClass != -1)
     {
@@ -565,6 +656,7 @@ int main(int argc, char** argv)
         if(regex_search(option,sm_option,parse_option))
         {
             codebook_size = stoi(sm_option[1]);
+            cout << "codebook size = " << codebook_size << endl;
         }
         
         string keypoint_option = argv[2];
@@ -633,11 +725,11 @@ int main(int argc, char** argv)
         double C = 2.0;
         smatch sm_option;
         int positiveClass = -1;
-        regex parse_option("train_libsvm_eps=(-?[0-9]*(\\.[0-9]+)?)_C=(-?[0-9]*(\\.[0-9]+)?)_AllVs=(-?[0-9]+)");
+        regex parse_option("train_libsvm_eps=(-?[0-9]*(\\.[0-9]+e?-?[0-9]*)?)_C=(-?[0-9]*(\\.[0-9]+e?-?[0-9]*)?)_AllVs=(-?[0-9]+)");
         if(regex_search(option,sm_option,parse_option))
         {
-            eps = stof(sm_option[1]);
-            C = stof(sm_option[3]);
+            eps = my_stof(sm_option[1]);
+            C = my_stof(sm_option[3]);
             positiveClass = stoi(sm_option[5]);
             cout << "eps="<<eps<<" C="<<C<<" positiveClass="<<positiveClass<<endl;
         }
@@ -661,7 +753,7 @@ int main(int argc, char** argv)
             codebook.readIn(codebookLoc);
         
         if (positiveClass != -2)
-            train(imageDir, positiveClass, &codebook, keypoint_option, descriptor_option, pool_option, eps, C, modelLoc);
+            train(imageDir, positiveClass, (codebookLoc != "none")?&codebook:NULL, keypoint_option, descriptor_option, pool_option, eps, C, modelLoc);
         else
         {
             
@@ -705,7 +797,7 @@ int main(int argc, char** argv)
             codebook.readIn(codebookLoc);
         
         if (positiveClass != -2)
-            trainSVM_CV(imageDir, positiveClass, &codebook, keypoint_option, descriptor_option, pool_option, eps, C, modelLoc);
+            trainSVM_CV(imageDir, positiveClass, (codebookLoc != "none")?&codebook:NULL, keypoint_option, descriptor_option, pool_option, eps, C, modelLoc);
         else
         {
             
@@ -725,6 +817,7 @@ int main(int argc, char** argv)
         if(regex_search(option,sm_option,parse_option))
         {
             positiveClass = stoi(sm_option[1]);
+            cout << "positiveClass="<<positiveClass<<endl;
         }
         
         string keypoint_option = argv[2];
@@ -744,12 +837,13 @@ int main(int argc, char** argv)
         
         
         Codebook codebook;
-        codebook.readIn(codebookLoc);
+        if (codebookLoc != "none")
+            codebook.readIn(codebookLoc);
         vector< vector<double>* > imageDescriptions;
         vector<double> imageLabels;
         
         
-        getImageDescriptions(imageDir, false, positiveClass, &codebook, keypoint_option, descriptor_option, pool_option, &imageDescriptions, &imageLabels);
+        getImageDescriptions(imageDir, false, positiveClass, (codebookLoc != "none")?&codebook:NULL, keypoint_option, descriptor_option, pool_option, &imageDescriptions, &imageLabels);
         
         
         
@@ -920,6 +1014,7 @@ int main(int argc, char** argv)
         if(regex_search(option,sm_option,parse_option))
         {
             positiveClass = stoi(sm_option[1]);
+            cout << "positiveClass="<<positiveClass<<endl;
         }
         
         string keypoint_option = argv[2];
@@ -939,12 +1034,13 @@ int main(int argc, char** argv)
         
         
         Codebook codebook;
-        codebook.readIn(codebookLoc);
+        if (codebookLoc != "none")
+            codebook.readIn(codebookLoc);
         vector< vector<double>* > imageDescriptions;
         vector<double> imageLabels;
         
         
-        getImageDescriptions(imageDir, false, positiveClass, &codebook, keypoint_option, descriptor_option, pool_option, &imageDescriptions, &imageLabels);
+        getImageDescriptions(imageDir, false, positiveClass, (codebookLoc != "none")?&codebook:NULL, keypoint_option, descriptor_option, pool_option, &imageDescriptions, &imageLabels);
         
         
         
@@ -963,7 +1059,7 @@ int main(int argc, char** argv)
             int numP=0;
             for (unsigned int j=0; j<imageDescriptions.size(); j++)
             {
-                assert(imageDescriptions[j]->size() == codebook.size());
+                assert(codebookLoc == "none" || imageDescriptions[j]->size() == codebook.size());
                 Mat instance(1, imageDescriptions[j]->size(), CV_32FC1);
                 for (int i=0; i<imageDescriptions[j]->size(); i++)
                 {
