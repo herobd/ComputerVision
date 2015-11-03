@@ -4,6 +4,8 @@
 #include <sstream>
 #include <iostream>
 
+#define CONV_THRESH 0.001
+
 bool Codebook::twentythree;
 
 Codebook::Codebook()
@@ -403,15 +405,80 @@ void Codebook::readInCSV(string filePath)
 }
 
 
+void Codebook::my_kmeans(const cv::Mat& data, int size, cv::Mat& centers)
+{
+    vector<float> maxs;
+    maxs.resize(data.cols,0);
+    vector<float> mins;
+    mins.resize(data.cols,99999);
+    for (int r=0; r<data.rows; r++)
+    {
+        for (int c=0; c<data.cols; c++)
+        {
+            if (data.at<float>(r,c) > maxs[c])
+                maxs[c]=data.at<float>(r,c);
+            if (data.at<float>(r,c) < mins[c])
+                mins[c]=data.at<float>(r,c);
+        }
+    }
+    
+    centers = (cv::Mat_<float>(size,data.cols));
+    default_random_engine generator;
+    for (int r=0; r<centers.rows; r++)
+    {
+        for (int c=0; c<centers.cols; c++)
+        {
+            uniform_real_distribution<float> distribution(mins[c],maxs[c]);
+            centers.at<float>(r,c) = distribution(generator);
+        }
+    }
+    //vector<int> curClass(data.rows);
+    
+    for (int iter=0; iter<100; iter++)
+    {
+	cv::Mat sum = (cv::Mat_<float>(size,data.cols));
+        vector<int> count(size);
+        for (int r=0; r<data.rows; r++)
+        {
+            int bestClass;
+            int minDist=99999;
+            for (int cl=0; cl<size; cl++)
+            {
+                float dist = cv::norm(data.row(r) - centers.row(cl));
+                if (dist < minDist)
+                {
+                    bestClass=cl;
+                    minDist=dist;
+                }
+            }
+            //curClass[r]=bestClass;
+            sum.row(bestClass) += data.row(r);
+            count[bestClass]++;
+        }
+        
+        int conv=0;
+        for (int cl=0; cl<size; cl++)
+        {
+            cv::Mat newVal = sum.row(cl)/count[cl];
+            double dist = cv::norm(newVal - centers.row(cl));
+            if (dist < CONV_THRESH)
+                conv++;
+            centers.row(cl) = newVal;
+        }
+        if (conv > size-4)
+            break;
+    }
+}
+
 void Codebook::trainFromExamples(int codebook_size,vector< vector<double> >& accum)
 {
     cv::Mat centriods;
-    cv::TermCriteria crit(cv::TermCriteria::COUNT + cv::TermCriteria::EPS,500,.9);
+    cv::TermCriteria crit(cv::TermCriteria::COUNT + cv::TermCriteria::EPS,400,.9);
     //      Mat data(accum.size(),accum[0].size(),CV_32F);
     //      for (int r=0; r< accum.size(); r++)
     //          for (int c=0; c<accum[0].size(); c++)
     //              data.at<float>(r,c) = accum[r][c];
-    int examples_size = std::min( (codebook_size*300), (int) accum.size());
+    int examples_size = std::min( std::max(codebook_size*300, 100000), (int) accum.size());
     cv::Mat data(examples_size,accum[0].size(),CV_32F);
     
     cout << "selecting random set" << endl;
@@ -442,9 +509,43 @@ void Codebook::trainFromExamples(int codebook_size,vector< vector<double> >& acc
     }
     cout << "computing kmeans" << endl;
     
-    cv::Mat temp;
-    cv::kmeans(data,codebook_size,temp,crit,10,cv::KMEANS_RANDOM_CENTERS,centriods);
+    //cv::Mat temp;
+    vector<int> temp;
+    //cv::kmeans(data,codebook_size,temp,crit,3,cv::KMEANS_PP_CENTERS,centriods);
+    my_kmeans(data,codebook_size,centriods);
+    if(centriods.rows != codebook_size)
+    {
+        //assert(temp.type() == cv::CV_64UI1);
+        assert(temp.size() == data.rows);
+        vector< vector<float> > sums(codebook_size);
+        vector<int> count(codebook_size);
+        for (int r=0; r<temp.size(); r++)
+        {
+            int cl = temp[r];
+            count.at(cl)++;
+            if (sums[cl].size()==0)
+                sums[cl].resize(data.cols,0);
+            for (int c=0; c<data.cols; c++)
+            {
+                
+                sums[cl][c] += data.at<float>(r,c);
+            }
+        }
+        cout << "compiling codebook" << endl;
     
+        for (int cl=0; cl<codebook_size; cl++)
+        {
+            assert(count[cl]>0);
+            vector<double> toAdd;
+            for (int c=0; c<data.cols; c++)
+            {
+                assert(sums[cl][c]>=0);
+                toAdd.push_back(sums[cl][c]/count[cl]);
+            }
+            codebook.push_back(toAdd);
+        }
+        return;
+    }
     
     cout << "compiling codebook" << endl;
     
@@ -453,7 +554,38 @@ void Codebook::trainFromExamples(int codebook_size,vector< vector<double> >& acc
         vector<double> toAdd;
         for (int c=0; c<centriods.cols; c++)
         {
-            assert(centriods.at<float>(r,c) > -1);
+            if (centriods.at<float>(r,c) < -1)
+            {
+                assert(temp.size() == data.rows);
+                vector< vector<float> > sums(codebook_size);
+                vector<int> count(codebook_size);
+                for (int r=0; r<temp.size(); r++)
+                {
+                    int cl = temp[r];
+                    count.at(cl)++;
+                    if (sums[cl].size()==0)
+                        sums[cl].resize(data.cols,0);
+                    for (int c=0; c<data.cols; c++)
+                    {
+                        
+                        sums[cl][c] += data.at<float>(r,c);
+                    }
+                }
+                cout << "compiling codebook" << endl;
+            
+                for (int cl=0; cl<codebook_size; cl++)
+                {
+                    assert(count[cl]>0);
+                    vector<double> toAdd;
+                    for (int c=0; c<data.cols; c++)
+                    {
+                        assert(sums[cl][c]>=0);
+                        toAdd.push_back(sums[cl][c]/count[cl]);
+                    }
+                    codebook.push_back(toAdd);
+                }
+                return;
+            }
             toAdd.push_back(centriods.at<float>(r,c));
         }
         codebook.push_back(toAdd);

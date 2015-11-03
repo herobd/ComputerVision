@@ -8,6 +8,7 @@
 #include "opencv2/core/core.hpp"
 #include <assert.h>
 #include <limits>
+#include <random>
 using namespace std;
 
 #define CODEBOOK_SIZE /*4096*/100
@@ -29,6 +30,7 @@ public:
     void readIn(string filePath);
     void readInCSV(string filePath);
     
+    static void my_kmeans(const cv::Mat& data, int size, cv::Mat& centers);
     void trainFromExamples(int codebook_size,vector< vector<double> >& accum);
     
     void unittest();
