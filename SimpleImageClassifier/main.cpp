@@ -24,8 +24,8 @@
 #include "codebook.h"
 
 #define SAVE_LOC string("./save/")
-#define DEFAULT_IMG_DIR string("/home/brian/Documents/CS601R/leedsbutterfly/images/")
-#define DEFAULT_CODEBOOK_SIZE 1024
+#define DEFAULT_IMG_DIR string("./leedsbutterfly/images/")
+#define DEFAULT_CODEBOOK_SIZE 200
 
 using namespace std;
 using namespace cv;

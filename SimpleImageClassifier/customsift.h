@@ -6,6 +6,8 @@
 #include "opencv2/imgproc/imgproc.hpp"
 #include <math.h>
 #include <iostream>
+#include <map>
+
 using namespace cv;
 using namespace std;
 
