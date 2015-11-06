@@ -27,6 +27,7 @@
 
 #define SAVE_LOC string("./save/")
 #define DEFAULT_IMG_DIR string("./leedsbutterfly/images/")
+#define DEFAULT_MASK_DIR string("./leedsbutterfly/segmentations/")
 #define DEFAULT_CODEBOOK_SIZE 200
 
 using namespace std;
@@ -88,7 +89,7 @@ vector<KeyPoint>* getKeyPoints(string option, const Mat& color_img)
         int nfeaturePoints=SIFT_NUMPTS;
         int nOctivesPerLayer=3;
         double contrastThresh=SIFT_THRESH;
-        SIFT detector(nfeaturePoints,nOctivesPerLayer,contrastThresh);
+        SIFT detector;//(nfeaturePoints,nOctivesPerLayer,contrastThresh);
         vector<KeyPoint>* ret = new vector<KeyPoint>();
         
         detector(img,noArray(),*ret,noArray(),false);
@@ -101,7 +102,21 @@ vector<KeyPoint>* getKeyPoints(string option, const Mat& color_img)
     }
     else if (hasPrefix(option,"dense"))
     {
-        return NULL;
+        Mat img;
+        cvtColor(color_img,img,CV_BGR2GRAY);
+        
+        int stride = 5;
+        smatch sm_option;
+        regex parse_option("stride=([0-9]+)");
+        if(regex_search(option,sm_option,parse_option))
+        {
+            stride = stoi(sm_option[1]);
+        }
+        vector<KeyPoint>* ret = new vector<KeyPoint>();
+        for (int x=stride; x<img.cols; x+=stride)
+            for (int y=stride; y<img.rows; y+=stride)
+                ret->push_back(KeyPoint(x,y,stride));
+        return ret;
     }
     
     return NULL;
@@ -120,7 +135,7 @@ vector< vector<double> >* getDescriptors(string option, Mat color_img, vector<Ke
         int nfeaturePoints=SIFT_NUMPTS;
         int nOctivesPerLayer=3;
         double contrastThresh=SIFT_THRESH;
-        SIFT detector(nfeaturePoints,nOctivesPerLayer,contrastThresh);
+        SIFT detector;//(nfeaturePoints,nOctivesPerLayer,contrastThresh);
         Mat desc;
         detector(img,noArray(),*keyPoints,desc,true);
         vector< vector<double> >* ret = new vector< vector<double> >(desc.rows);
@@ -177,7 +192,7 @@ vector<double>* getImageDescription(string option, const vector<KeyPoint>* keyPo
         
         //Normalize the description
 #if NORMALIZE_DESC
-	double sum;
+	    double sum;
         for (double v : *ret)
             sum += v*v;
         double norm = sqrt(sum);
@@ -212,13 +227,15 @@ void zscore(vector< vector<double>* >* imageDescriptions, string saveFileName)
             stdDev[i] += pow(image->at(i)-mean[i],2);
     }
     for (int i=0; i<stdDev.size(); i++)
-        stdDev[i] = sqrt(stdDev[i]);
+        stdDev[i] = sqrt(stdDev[i]/imageDescriptions->size());
     
     for (vector<double>* image : *imageDescriptions)
     {
         for (int i=0; i<image->size(); i++)
             if (stdDev[i] != 0)
                 image->at(i) = (image->at(i)-mean[i])/stdDev[i];
+            else
+                image->at(i) = (image->at(i)-mean[i]);
     }
     
     ofstream saveZ(saveFileName);
@@ -234,6 +251,8 @@ void zscore(vector< vector<double>* >* imageDescriptions, string saveFileName)
 
 void zscoreUse(vector< vector<double>* >* imageDescriptions, string loadFileName)
 {
+    vector<double> mean;
+    vector<double> stdDev;
     ifstream loadZ(loadFileName);
     regex parse_line("\\w*:(((-?[0-9]*(\\.[0-9]+e?-?[0-9]*)?),)+)");
     regex parse_values("(-?[0-9]*(\\.[0-9]+e?-?[0-9]*)?),");
@@ -278,6 +297,8 @@ void zscoreUse(vector< vector<double>* >* imageDescriptions, string loadFileName
         for (int i=0; i<image->size(); i++)
             if (stdDev[i] != 0)
                 image->at(i) = (image->at(i)-mean.at(i))/stdDev.at(i);
+            else
+                image->at(i) = (image->at(i)-mean[i]);
     }
 }
 
@@ -298,6 +319,7 @@ void getImageDescriptions(string imageDir, bool trainImages, int positiveClass, 
          cout << "reading images and obtaining descriptions" << endl;
           
         vector<string> fileNames;
+	//vector<string> maskFileNames;
         while ((ent = readdir (dir)) != NULL) {
           string fileName(ent->d_name);
           smatch sm;
@@ -308,7 +330,8 @@ void getImageDescriptions(string imageDir, bool trainImages, int positiveClass, 
                   (!trainImages && isTestingImage(stoi(sm[2]))) )
               {
                 fileNames.push_back(fileName);
-                
+                //maskFileNames.push_back(string(sm[1])+"_"+string(sm[2])+"_mask.png");
+
                 imageLabels->push_back(stoi(sm[1]));
               }
           }
@@ -323,6 +346,7 @@ void getImageDescriptions(string imageDir, bool trainImages, int positiveClass, 
             string fileName=fileNames[nameIdx];
 
             Mat color_img = imread(imageDir+fileName, CV_LOAD_IMAGE_COLOR);
+	    //Mat mask = imread(DEFAULT_MASK_DIR+maskFileNames[nameIdx], CV_LOAD_IMAGE_GRAY);
 
             vector<KeyPoint>* keyPoints = getKeyPoints(keyPoint_option,color_img);
             vector< vector<double> >* descriptors = getDescriptors(descriptor_option,color_img,keyPoints);
@@ -336,10 +360,11 @@ void getImageDescriptions(string imageDir, bool trainImages, int positiveClass, 
             delete keyPoints;
             delete descriptors;
         }
-        ;
+        
         if (trainImages)
         {
             zscore(imageDescriptions,z_saveFileName);
+        }
         else
         {
             zscoreUse(imageDescriptions,z_saveFileName);
@@ -543,14 +568,15 @@ void trainSVM_CV(string imageDir, int positiveClass, const Codebook* codebook, s
         }
     
     CvSVMParams params;
-    params.svm_type    = CvSVM::C_SVC;
-    params.kernel_type = CvSVM::LINEAR;
-    params.term_crit   = cvTermCriteria(CV_TERMCRIT_ITER, 100, 1e-6);
+    //params.svm_type    = CvSVM::C_SVC;
+    //params.kernel_type = CvSVM::LINEAR;
+    //params.term_crit   = cvTermCriteria(CV_TERMCRIT_ITER, 100, 1e-6);
     Mat weighting = (Mat_<float>(2,1) << 9.0,1.0);
     CvMat www = weighting;
     if (positiveClass != -1)
     {
-       params.class_weights = &www;
+        
+        params.class_weights = &www;
     }
 
     CvSVM SVM;
@@ -599,7 +625,126 @@ void trainSVM_CV(string imageDir, int positiveClass, const Codebook* codebook, s
     }
 }
 ///////////////////////////////////////////
-#include "tester.cpp"
+//#include "tester.cpp"
+void test()
+{
+    
+    assert(hasPrefix("abcd","a"));
+    assert(hasPrefix("abcd","abcd"));
+    assert(!hasPrefix("abcd","bcd"));
+    assert(!hasPrefix("abcd","abcde"));
+    assert(!hasPrefix(" abcd","a"));
+    
+    assert(isTrainingImage(1));
+    assert(!isTrainingImage(2));
+    assert(!isTestingImage(1));
+    assert(isTestingImage(2));
+    
+    assert(0.0 == my_stof(".0"));
+    assert(0.0 == my_stof("0.0"));
+    assert(0.0 == my_stof("0"));
+    assert(10.0 == my_stof("10.0"));
+    assert(100.0 == my_stof("1.0e2"));
+    assert(0.0001 == my_stof("1.0e-4"));
+    
+    vector<double> desc0 = {1.0,2.0,3.0};
+    struct svm_node* test_node0 = convertDescription(&desc0);
+    assert(test_node0[0].value == 1.0);
+    assert(test_node0[1].value == 2.0);
+    assert(test_node0[2].value == 3.0);
+    assert(test_node0[0].index == 0);
+    assert(test_node0[1].index == 1);
+    assert(test_node0[2].index == 2);
+    assert(test_node0[3].index == -1);
+    
+    vector<double> desc1 = {1.0,0.0,3.0};
+    struct svm_node* test_node1 = convertDescription(&desc1);
+    assert(test_node1[0].value == 1.0);
+    assert(test_node1[1].value == 3.0);
+    assert(test_node1[0].index == 0);
+    assert(test_node1[1].index == 2);
+    assert(test_node1[2].index == -1);
+    
+    vector< vector<double>* > vec0(8);
+    vec0[0] = new vector<double>(3);
+    vec0[0]->at(0) = 2;
+    vec0[0]->at(1) = 2;
+    vec0[0]->at(2) = 3;
+    vec0[1] = new vector<double>(3);
+    vec0[1]->at(0) = 4;
+    vec0[1]->at(1) = 2.2;
+    vec0[1]->at(2) = 3;
+    vec0[2] = new vector<double>(3);
+    vec0[2]->at(0) = 4;
+    vec0[2]->at(1) = 2;
+    vec0[2]->at(2) = 3;
+    vec0[3] = new vector<double>(3);
+    vec0[3]->at(0) = 4;
+    vec0[3]->at(1) = 2.2;
+    vec0[3]->at(2) = 3;
+    vec0[4] = new vector<double>(3);
+    vec0[4]->at(0) = 5;
+    vec0[4]->at(1) = 2;
+    vec0[4]->at(2) = 3;
+    vec0[5] = new vector<double>(3);
+    vec0[5]->at(0) = 5;
+    vec0[5]->at(1) = 2;
+    vec0[5]->at(2) = 3;
+    vec0[6] = new vector<double>(3);
+    vec0[6]->at(0) = 7;
+    vec0[6]->at(1) = 2.4;
+    vec0[6]->at(2) = 3;
+    vec0[7] = new vector<double>(3);
+    vec0[7]->at(0) = 9;
+    vec0[7]->at(1) = 2.1;
+    vec0[7]->at(2) = 3;
+    
+    
+    vector< vector<double>* > vec1(8);
+    vec1[0] = new vector<double>(3);
+    vec1[0]->at(0) = 2;
+    vec1[0]->at(1) = 2;
+    vec1[0]->at(2) = 3;
+    vec1[1] = new vector<double>(3);
+    vec1[1]->at(0) = 4;
+    vec1[1]->at(1) = 2.2;
+    vec1[1]->at(2) = 3;
+    vec1[2] = new vector<double>(3);
+    vec1[2]->at(0) = 4;
+    vec1[2]->at(1) = 2;
+    vec1[2]->at(2) = 3;
+    vec1[3] = new vector<double>(3);
+    vec1[3]->at(0) = 4;
+    vec1[3]->at(1) = 2.2;
+    vec1[3]->at(2) = 3;
+    vec1[4] = new vector<double>(3);
+    vec1[4]->at(0) = 5;
+    vec1[4]->at(1) = 2;
+    vec1[4]->at(2) = 3;
+    vec1[5] = new vector<double>(3);
+    vec1[5]->at(0) = 5;
+    vec1[5]->at(1) = 2;
+    vec1[5]->at(2) = 3;
+    vec1[6] = new vector<double>(3);
+    vec1[6]->at(0) = 7;
+    vec1[6]->at(1) = 2.4;
+    vec1[6]->at(2) = 3;
+    vec1[7] = new vector<double>(3);
+    vec1[7]->at(0) = 9;
+    vec1[7]->at(1) = 2.1;
+    vec1[7]->at(2) = 3;
+    
+    zscore(&vec0,"save/temp");
+    zscoreUse(&vec1,"save/temp");
+    assert(vec0[0]->at(0)==(2-5.0)/2.0);
+    assert(vec0[1]->at(0)==(4-5.0)/2.0);
+    assert(vec0[1]->at(2)==0.0);
+    for (int i=0; i<3; i++)
+        for (int j=0; j<3; j++)
+            assert(fabs(vec0[i]->at(j) - vec1[i]->at(j))<.0001);
+            
+
+}
 ////////////////
 
 int main(int argc, char** argv)
@@ -1082,9 +1227,11 @@ int main(int argc, char** argv)
         }
         
     }
-    else if (hasPrefix(option,"test_cvsvm"))
+    else if (hasPrefix(option,"runtest"))
     {
         test();
+	Codebook cb;
+	cb.unittest();
     }
     else
         cout << "ERROR no option: " << option << endl;
