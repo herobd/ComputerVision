@@ -76,7 +76,7 @@ vector< tuple<int,float> > Codebook::quantizeSoft(const vector<float> &term, int
     return ret;
 }
 
-void Codebook::trainFromExamples(int codebook_size,vector< vector<float> >& accum)
+void Codebook::trainFromExamples(int codebook_size,vector< vector<double> >& accum)
 {
     int dataSize = min((int)accum.size(), (int)700*codebook_size);
     cv::Mat data(dataSize,accum[0].size(), CV_32F);
@@ -405,11 +405,11 @@ void Codebook::unittest()
     
     ////Test training of codebook////////
     codebook.clear();
-    vector< vector<float> >accum(1000);
+    vector< vector<double> >accum(1000);
     default_random_engine generator;
-    normal_distribution<float> distributionP(5.0,.10);
-    normal_distribution<float> distributionN(2.0,.10);
-    normal_distribution<float> distributionR(3.0,.10);
+    normal_distribution<double> distributionP(5.0,.10);
+    normal_distribution<double> distributionN(2.0,.10);
+    normal_distribution<double> distributionR(3.0,.10);
     for (int i=0; i<accum.size(); i++)
     {
         for (int j=0; j<5*2+2; j++)

@@ -1,7 +1,7 @@
 #include "customsift.h"
 
 CustomSIFT* CustomSIFT::singleton=NULL;
-map<double,Mat> CustomSIFT::blurred;
+
 
 //TODO this should blur the image before sampling. Maybe.
 Vec2f CustomSIFT::getSubpix(const Mat& img, Point2f off,KeyPoint p)
@@ -12,7 +12,7 @@ Vec2f CustomSIFT::getSubpix(const Mat& img, Point2f off,KeyPoint p)
     return patch.at<Vec2f>(0,0);
 }
 
-float CustomSIFT::getSubpixBlur(const Mat& img, Point2f off,KeyPoint p, double blur)
+float CustomSIFT::getSubpixBlur(const Mat& img, Point2f off,KeyPoint p, double blur, map<double,Mat> &blurred)
 {
     Mat use;
     if (blur < 1)
@@ -34,7 +34,10 @@ float CustomSIFT::getSubpixBlur(const Mat& img, Point2f off,KeyPoint p, double b
     Mat patch;
     Point2f pt (off.x+p.pt.x, off.y+p.pt.y);
     getRectSubPix(use, cv::Size(1,1), pt, patch);
-    return patch.at<float>(0,0);
+    assert(patch.type() == CV_32F);
+    float ret = patch.at<float>(0,0);
+    assert(ret==ret);
+    return ret;
 }
 
 double CustomSIFT::guassianWeight(double dist, double spread)
@@ -70,12 +73,14 @@ Point2f CustomSIFT::rotatePoint(Mat M, const Point2f& p)
     
 } 
 
-void CustomSIFT::extract(const Mat &img, const vector<KeyPoint> &keyPoints, vector< vector<double> >& descriptors)
+void CustomSIFT::extract(const Mat &in_img, const vector<KeyPoint> &keyPoints, vector< vector<double> >& descriptors)
 {
+    map<double,Mat> blurred;
     int descInGrid=4;
     int numBins=8;
     //Mat gradImg = computeGradient(img);
-    
+    Mat img;
+    in_img.convertTo(img, CV_32F);
     descriptors.resize(keyPoints.size());
     for (int kpi=0; kpi<keyPoints.size(); kpi++)
     {
@@ -92,31 +97,31 @@ void CustomSIFT::extract(const Mat &img, const vector<KeyPoint> &keyPoints, vect
         descriptors[kpi].assign(descInGrid*descInGrid*numBins,0);
         
         
-        
+        int boxWidth=8;
         for (int boxR=-descInGrid/2; boxR<descInGrid/2; boxR++)
             for (int boxC=-descInGrid/2; boxC<descInGrid/2; boxC++)
             {
-                for (int xOffset=-3.5; xOffset<=3.5; xOffset+=1.0)
+                for (int xOffset=-(boxWidth/2-.5); xOffset<=(boxWidth/2-.5); xOffset+=1.0)
                 {
-                    for (int yOffset=-3.5; yOffset<=3.5; yOffset+=1.0)
+                    for (int yOffset=-(boxWidth/2-.5); yOffset<=(boxWidth/2-.5); yOffset+=1.0)
                     { 
-                        Point2f actualOffset = rotatePoint(rotM,Point2f((4*boxC+xOffset)*scale ,(4*boxR+yOffset)*scale));
+                        Point2f actualOffset = rotatePoint(rotM,Point2f((boxWidth*boxC+xOffset)*scale ,(boxWidth*boxR+yOffset)*scale));
                         
-                        Point2f actualOffset_hp = rotatePoint(rotM,Point2f((4*boxC+xOffset+1)*scale ,(4*boxR+yOffset)*scale));
-                        Point2f actualOffset_hn = rotatePoint(rotM,Point2f((4*boxC+xOffset-1)*scale ,(4*boxR+yOffset)*scale));
+                        Point2f actualOffset_hp = rotatePoint(rotM,Point2f((boxWidth*boxC+xOffset+1)*scale ,(4*boxR+yOffset)*scale));
+                        Point2f actualOffset_hn = rotatePoint(rotM,Point2f((boxWidth*boxC+xOffset-1)*scale ,(4*boxR+yOffset)*scale));
                         
-                        Point2f actualOffset_vp = rotatePoint(rotM,Point2f((4*boxC+xOffset)*scale ,(4*boxR+yOffset+1)*scale));
-                        Point2f actualOffset_vn = rotatePoint(rotM,Point2f((4*boxC+xOffset)*scale ,(4*boxR+yOffset-1)*scale));
+                        Point2f actualOffset_vp = rotatePoint(rotM,Point2f((boxWidth*boxC+xOffset)*scale ,(boxWidth*boxR+yOffset+1)*scale));
+                        Point2f actualOffset_vn = rotatePoint(rotM,Point2f((boxWidth*boxC+xOffset)*scale ,(boxWidth*boxR+yOffset-1)*scale));
                         
-                        double firstDist = sqrt( pow((4*boxC+xOffset)*scale,2) + pow((4*boxR+yOffset)*scale,2) );
+                        double firstDist = sqrt( pow((boxWidth*boxC+xOffset)*scale,2) + pow((boxWidth*boxR+yOffset)*scale,2) );
                         double actualDist = sqrt(actualOffset.x*actualOffset.x + actualOffset.y*actualOffset.y);
                         assert (fabs(firstDist-actualDist)<.001);
                         //Vec2f v = getSubpix(img,actualOffset,p);
-                        double hGrad = getSubpixBlur(img,actualOffset_hp,p,scale) - getSubpixBlur(img,actualOffset_hn,p,scale);
-                        double vGrad = getSubpixBlur(img,actualOffset_vp,p,scale) - getSubpixBlur(img,actualOffset_vn,p,scale);
+                        double hGrad = getSubpixBlur(img,actualOffset_hp,p,scale,blurred) - getSubpixBlur(img,actualOffset_hn,p,scale,blurred);
+                        double vGrad = getSubpixBlur(img,actualOffset_vp,p,scale,blurred) - getSubpixBlur(img,actualOffset_vn,p,scale,blurred);
                         double mag = sqrt(hGrad*hGrad + vGrad*vGrad) * guassianWeight(actualDist,p.size/2.0);
                         double theta = atan2(vGrad,hGrad);
-                        //theta += CV_PI*p.angle/180;
+                        //theta is already relative to rotation of descriptor
                         
                         double binSpace = (theta+CV_PI)/(2*CV_PI) * numBins;
                         int binCenter = ((int)(binSpace + (0.5)))%numBins;

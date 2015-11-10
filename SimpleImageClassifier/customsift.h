@@ -21,15 +21,14 @@ public:
         
         return singleton;
     }
-    static void extract(const Mat &img, const vector<KeyPoint> &keyPoints, vector< vector<double> >& descriptors);
+    static void extract(const Mat &in_img, const vector<KeyPoint> &keyPoints, vector< vector<double> >& descriptors);
     
     
 private:
     static CustomSIFT* singleton;
-    static map<double,Mat> blurred;
 
     static Vec2f getSubpix(const Mat& img, Point2f off,KeyPoint p);
-    static float getSubpixBlur(const Mat& img, Point2f off,KeyPoint p, double blur);
+    static float getSubpixBlur(const Mat& img, Point2f off,KeyPoint p, double blur, map<double,Mat> &blurred);
     static double guassianWeight(double dist, double spread);
     static void normalizeDesc(vector<double>& desc);
     static Mat computeGradient(const Mat &img);
